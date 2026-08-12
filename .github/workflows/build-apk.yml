@@ -1,4 +1,4 @@
-name: Build APK
+name: Build Android APK
 
 on:
   workflow_dispatch:
@@ -10,358 +10,159 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      # ========================================
-      # 1. GitHubリポジトリを取得
-      # ========================================
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ========================================
-      # 2. ZIPファイルを探す
-      # ========================================
       - name: Find project ZIP
+        id: find_zip
         shell: bash
         run: |
-          set -euo pipefail
+          ZIP=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname "*.zip" | head -n 1 || true)
 
-          ZIP_FILE="$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)"
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP was not found."
-            echo "ZIP files in repository:"
-            find . -maxdepth 2 -type f -iname '*.zip' -print
-            exit 1
-          fi
-
-          echo "Found project ZIP:"
-          echo "$ZIP_FILE"
-
-          echo "PROJECT_ZIP=$ZIP_FILE" >> "$GITHUB_ENV"
-
-      # ========================================
-      # 3. ZIPを一時フォルダへ展開
-      # ========================================
-      - name: Extract project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf _android_project
-          mkdir -p _android_project
-
-          unzip -q "$PROJECT_ZIP" -d _android_project
-
-          echo "=== Extracted project ==="
-          find _android_project -maxdepth 3 -type f | sort
-
-      # ========================================
-      # 4. Androidプロジェクトの場所を確認
-      # ========================================
-      - name: Find Gradle project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SETTINGS_FILE=""
-
-          if [ -f "_android_project/settings.gradle.kts" ]; then
-            SETTINGS_FILE="_android_project/settings.gradle.kts"
-          elif [ -f "_android_project/settings.gradle" ]; then
-            SETTINGS_FILE="_android_project/settings.gradle"
+          if [ -n "$ZIP" ]; then
+            echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+            echo "FOUND_ZIP=true" >> "$GITHUB_ENV"
+            echo "Found ZIP: $ZIP"
           else
-            SETTINGS_FILE="$(find _android_project \
-              -type f \
-              \( -name settings.gradle -o -name settings.gradle.kts \) \
-              -print -quit)"
+            echo "FOUND_ZIP=false" >> "$GITHUB_ENV"
+            echo "No ZIP at repository root. Using repository files directly."
           fi
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: settings.gradle or settings.gradle.kts was not found."
-            find _android_project -maxdepth 5 -type f -print
+      - name: Extract project ZIP
+        if: env.FOUND_ZIP == 'true'
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/project"
+          mkdir -p "$GITHUB_WORKSPACE/project"
+          unzip -o "$ZIP" -d "$GITHUB_WORKSPACE/project"
+
+      - name: Locate Android project
+        shell: bash
+        run: |
+          if [ "${FOUND_ZIP:-false}" = "true" ]; then
+            ROOT="$GITHUB_WORKSPACE/project"
+          else
+            ROOT="$GITHUB_WORKSPACE"
+          fi
+
+          SETTINGS=$(find "$ROOT" -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -n 1 || true)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "Android settings.gradle/settings.gradle.kts was not found."
+            echo "Files under repository:"
+            find "$ROOT" -maxdepth 5 -type f | head -200
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-
-          echo "Android project directory:"
-          echo "$PROJECT_DIR"
+          PROJECT_DIR=$(dirname "$SETTINGS")
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      # ========================================
-      # 5. Java 17
-      # ========================================
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
+          echo "Android project:"
+          echo "$PROJECT_DIR"
+
+      - name: Check Gradle Wrapper
+        shell: bash
+        run: |
+          if [ ! -f "$PROJECT_DIR/gradlew" ]; then
+            echo "gradlew not found."
+            exit 1
+          fi
+
+          if [ ! -d "$PROJECT_DIR/gradle/wrapper" ]; then
+            echo "gradle/wrapper directory not found."
+            exit 1
+          fi
+
+          chmod +x "$PROJECT_DIR/gradlew"
+
+          echo "Gradle Wrapper OK"
+
+      - name: Check monsters.csv
+        shell: bash
+        run: |
+          CSV="$PROJECT_DIR/app/src/main/assets/monsters.csv"
+
+          if [ ! -f "$CSV" ]; then
+            echo "monsters.csv not found:"
+            echo "$CSV"
+            exit 1
+          fi
+
+          echo "monsters.csv found:"
+          ls -lh "$CSV"
+
+          HEADER=$(head -n 1 "$CSV")
+
+          if [ "$HEADER" != "no,name,rank,family,size" ]; then
+            echo "Invalid CSV header:"
+            echo "$HEADER"
+            exit 1
+          fi
+
+          ROWS=$(tail -n +2 "$CSV" | grep -c . || true)
+
+          echo "Monster rows: $ROWS"
+
+          if [ "$ROWS" -ne 659 ]; then
+            echo "Expected 659 monster rows, found $ROWS."
+            exit 1
+          fi
+
+          echo "CSV check OK"
+
+      - name: Show CSV sample
+        shell: bash
+        run: |
+          echo "----- CSV HEAD -----"
+          head -n 5 "$PROJECT_DIR/app/src/main/assets/monsters.csv"
+
+          echo
+          echo "----- CSV TAIL -----"
+          tail -n 5 "$PROJECT_DIR/app/src/main/assets/monsters.csv"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      # ========================================
-      # 6. Python
-      # ========================================
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      # ========================================
-      # 7. スクレイパー用ライブラリ
-      # ========================================
-      - name: Install scraper dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          python -m pip install \
-            --disable-pip-version-check \
-            requests \
-            beautifulsoup4
-
-      # ========================================
-      # 8. モンスターデータ生成
-      # ========================================
-      - name: Generate monster data
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "Generating monster data"
-          echo "========================================"
-
-          python tools/scrape_gamewith.py
-
-          echo ""
-          echo "=== monsters.csv ==="
-
-          test -f app/src/main/assets/monsters.csv
-
-          wc -l app/src/main/assets/monsters.csv
-
-          echo ""
-          echo "--- First 5 lines ---"
-          head -n 5 app/src/main/assets/monsters.csv
-
-          echo ""
-          echo "--- Last 5 lines ---"
-          tail -n 5 app/src/main/assets/monsters.csv
-
-          DATA_COUNT=$(( $(wc -l < app/src/main/assets/monsters.csv) - 1 ))
-
-          echo ""
-          echo "Monster records: $DATA_COUNT"
-
-          if [ "$DATA_COUNT" -ne 659 ]; then
-            echo "ERROR: Expected 659 monster records."
-            echo "Actual: $DATA_COUNT"
-            exit 1
-          fi
-
-          echo "Monster data check: OK"
-
-      # ========================================
-      # 9. Android SDK
-      # ========================================
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      # ========================================
-      # 10. Android SDK 35をインストール
-      # ========================================
-      - name: Install Android SDK 35
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          yes | sdkmanager --licenses >/dev/null || true
-
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      # ========================================
-      # 11. Android SDKライセンス
-      # ========================================
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-
-      # ========================================
-      # 12. Gradle Wrapper確認
-      # ========================================
-      - name: Check Gradle Wrapper
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -f gradlew
-          test -f gradle/wrapper/gradle-wrapper.jar
-          test -f gradle/wrapper/gradle-wrapper.properties
-
-          chmod +x gradlew
-
-          echo "=== Gradle wrapper ==="
-          ls -lh gradlew
-          ls -lh gradle/wrapper/
-
-      # ========================================
-      # 13. Gradleプロジェクト構造確認
-      # ========================================
-      - name: Check project structure
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "Project structure"
-          echo "========================================"
-
-          find . -maxdepth 4 -type f \
-            \( \
-              -name 'settings.gradle' \
-              -o -name 'settings.gradle.kts' \
-              -o -name 'build.gradle' \
-              -o -name 'build.gradle.kts' \
-              -o -name 'gradle.properties' \
-            \) \
-            -print
-
-          echo ""
-          echo "=== settings.gradle.kts ==="
-
-          if [ -f settings.gradle.kts ]; then
-            cat settings.gradle.kts
-          elif [ -f settings.gradle ]; then
-            cat settings.gradle
-          fi
-
-          echo ""
-          echo "=== app/build.gradle.kts ==="
-
-          if [ -f app/build.gradle.kts ]; then
-            cat app/build.gradle.kts
-          elif [ -f app/build.gradle ]; then
-            cat app/build.gradle
-          fi
-
-      # ========================================
-      # 14. JVM設定確認
-      # ========================================
-      - name: Configure JVM target compatibility
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Checking Java/Kotlin compatibility..."
-
-          echo ""
-          echo "Java:"
-          java -version
-
-          echo ""
-          echo "Gradle:"
-          ./gradlew --version
-
-          echo ""
-          echo "Searching for forbidden JavaCompile --release configuration..."
-
-          if grep -RIn \
-            --exclude-dir=.gradle \
-            --exclude-dir=build \
-            "options.release" \
-            .; then
-
-            echo ""
-            echo "ERROR: options.release configuration was found."
-            echo "Android Gradle Plugin builds should use"
-            echo "sourceCompatibility / targetCompatibility instead."
-            exit 1
-          fi
-
-          echo "No options.release configuration found."
-
-      # ========================================
-      # 15. Gradleビルド
-      # ========================================
       - name: Build Debug APK
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -euo pipefail
+          ./gradlew --no-daemon assembleDebug
 
-          echo "========================================"
-          echo "Building Debug APK"
-          echo "========================================"
-
-          ./gradlew \
-            :app:assembleDebug \
-            --stacktrace \
-            --no-daemon \
-            --warning-mode all
-
-      # ========================================
-      # 16. APK確認
-      # ========================================
-      - name: Check APK
-        working-directory: ${{ env.PROJECT_DIR }}
+      - name: Find APK
+        id: apk
         shell: bash
         run: |
-          set -euo pipefail
+          APK=$(find "$PROJECT_DIR/app/build/outputs/apk" \
+            -type f \
+            -name "*.apk" \
+            | head -n 1 || true)
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: APK was not generated."
-            echo ""
-            echo "Available APK files:"
-            find app/build -type f -name '*.apk' -print || true
+          if [ -z "$APK" ]; then
+            echo "APK was not generated."
             exit 1
           fi
 
-          echo "========================================"
-          echo "APK generated successfully"
-          echo "========================================"
+          echo "APK=$APK" >> "$GITHUB_ENV"
 
+          echo "APK generated:"
           ls -lh "$APK"
 
-      # ========================================
-      # 17. APKをGitHub Actions Artifactとして保存
-      # ========================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: TerrySPMonsterManager-debug
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          name: TerrySPMonsterManager-APK
+          path: ${{ env.APK }}
           if-no-files-found: error
-
-      # ========================================
-      # 18. ビルド結果
-      # ========================================
-      - name: Build summary
-        if: always()
-        shell: bash
-        run: |
-          echo "========================================"
-          echo "Build summary"
-          echo "========================================"
-
-          if [ -n "${PROJECT_DIR:-}" ] && [ -d "$PROJECT_DIR" ]; then
-            echo "Project directory:"
-            echo "$PROJECT_DIR"
-
-            echo ""
-            echo "APK files:"
-            find "$PROJECT_DIR/app/build" \
-              -type f \
-              -name '*.apk' \
-              -print 2>/dev/null || true
-          fi
+          retention-days: 30
