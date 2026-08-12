@@ -25,18 +25,15 @@ jobs:
           fi
 
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
-          echo "Found ZIP: $ZIP"
+          echo "Found: $ZIP"
 
       - name: Extract project
         run: |
           rm -rf "$GITHUB_WORKSPACE/project"
-
           mkdir -p "$GITHUB_WORKSPACE/project"
 
           unzip -o "$ZIP" \
             -d "$GITHUB_WORKSPACE/project"
-
-          echo "Project extracted."
 
       - name: Find Android project
         run: |
@@ -47,13 +44,6 @@ jobs:
 
           if [ -z "$SETTINGS" ]; then
             echo "settings.gradle or settings.gradle.kts not found"
-
-            echo "Project files:"
-            find "$GITHUB_WORKSPACE/project" \
-              -maxdepth 5 \
-              -type f \
-              | head -100
-
             exit 1
           fi
 
@@ -76,79 +66,40 @@ jobs:
       - name: Generate Gradle Wrapper
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          echo "Generating Gradle Wrapper..."
-
           gradle wrapper --gradle-version 8.7
 
-          echo ""
-          echo "=== gradlew ==="
+          echo "=== Gradle Wrapper ==="
           ls -lh gradlew
-
-          echo ""
-          echo "=== gradle/wrapper ==="
           ls -lh gradle/wrapper/
-
-          echo ""
-          echo "Wrapper generation completed."
 
       - name: Create new ZIP
         run: |
-          set -e
-
-          TEMP_ZIP="$RUNNER_TEMP/TerrySPMonsterManager_With_GradleWrapper.zip"
-
-          FINAL_ZIP="$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
-
-          rm -f "$TEMP_ZIP"
-          rm -f "$FINAL_ZIP"
-
-          echo "=== Project directory ==="
-          echo "$PROJECT_DIR"
-
           cd "$PROJECT_DIR"
 
-          echo ""
-          echo "=== Creating ZIP ==="
+          OUTPUT="$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
 
-          zip -r "$TEMP_ZIP" . \
+          rm -f "$OUTPUT"
+
+          echo "Creating ZIP..."
+
+          zip -r "$OUTPUT" . \
             -x ".gradle/*" \
             -x "*/.gradle/*" \
             -x "build/*" \
             -x "*/build/*" \
             -x "*.zip"
 
-          echo ""
-          echo "=== Checking temporary ZIP ==="
+          echo "ZIP creation finished."
 
-          test -f "$TEMP_ZIP"
+          echo "Checking ZIP contents..."
 
-          ls -lh "$TEMP_ZIP"
+          unzip -l "$OUTPUT" | grep "gradlew"
 
-          echo ""
-          echo "=== Copying ZIP ==="
+          unzip -l "$OUTPUT" | grep "gradle/wrapper/gradle-wrapper.jar"
 
-          cp "$TEMP_ZIP" "$FINAL_ZIP"
+          unzip -l "$OUTPUT" | grep "gradle/wrapper/gradle-wrapper.properties"
 
-          echo ""
-          echo "=== Checking final ZIP ==="
-
-          test -f "$FINAL_ZIP"
-
-          ls -lh "$FINAL_ZIP"
-
-          echo ""
-          echo "=== Checking Gradle Wrapper inside ZIP ==="
-
-          unzip -l "$FINAL_ZIP" | grep "gradlew"
-
-          unzip -l "$FINAL_ZIP" | grep "gradle/wrapper/gradle-wrapper.jar"
-
-          unzip -l "$FINAL_ZIP" | grep "gradle/wrapper/gradle-wrapper.properties"
-
-          echo ""
-          echo "================================"
-          echo "ZIP IS READY!"
-          echo "================================"
+          echo "Gradle Wrapper ZIP is ready."
 
       - name: Upload new ZIP
         uses: actions/upload-artifact@v4
