@@ -53,9 +53,7 @@ jobs:
             exit 1
           fi
 
-          echo "========================================"
-          echo "Project ZIP found"
-          echo "========================================"
+          echo "Project ZIP:"
           echo "$ZIP_FILE"
 
           echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
@@ -75,9 +73,8 @@ jobs:
           rm -rf "$PROJECT_DIR"
           mkdir -p "$PROJECT_DIR"
 
-          echo "========================================"
-          echo "Extracting project ZIP"
-          echo "========================================"
+          echo "Extracting:"
+          echo "${{ steps.find_zip.outputs.zip_file }}"
 
           unzip -q \
             "${{ steps.find_zip.outputs.zip_file }}" \
@@ -117,7 +114,7 @@ jobs:
 
           if [ -z "$SETTINGS_FILE" ]; then
             echo "ERROR:"
-            echo "settings.gradle or settings.gradle.kts was not found."
+            echo "settings.gradle / settings.gradle.kts was not found."
             echo
             echo "Extracted files:"
             find "$ROOT" -type f | sort
@@ -126,17 +123,8 @@ jobs:
 
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
-          echo "========================================"
-          echo "Android project found"
-          echo "========================================"
+          echo "Android project:"
           echo "$PROJECT_DIR"
-
-          echo
-          echo "Project files:"
-          find "$PROJECT_DIR" \
-            -maxdepth 4 \
-            -type f \
-            | sort
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
@@ -151,109 +139,157 @@ jobs:
           set -euo pipefail
 
           if [ ! -f "./gradlew" ]; then
-            echo "ERROR: gradlew was not found."
+            echo "ERROR: gradlew not found."
             exit 1
           fi
 
           if [ ! -f "./gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo "ERROR: gradle-wrapper.properties was not found."
+            echo "ERROR: gradle-wrapper.properties not found."
             exit 1
           fi
 
           if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "ERROR: gradle-wrapper.jar was not found."
+            echo "ERROR: gradle-wrapper.jar not found."
             exit 1
           fi
 
           chmod +x ./gradlew
 
-          echo "========================================"
           echo "Gradle Wrapper OK"
-          echo "========================================"
 
           ./gradlew --version
 
 
       # ==================================================
-      # 6. Check monsters.csv
+      # 6. Validate monsters.csv / breeding.csv
       # ==================================================
-      - name: Check monsters.csv
+      - name: Validate CSV data
         working-directory: ${{ steps.locate.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          CSV="app/src/main/assets/monsters.csv"
-          EXPECTED="no,name,rank,family,size"
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
 
-          if [ ! -f "$CSV" ]; then
-            echo "ERROR:"
-            echo "$CSV was not found."
-            exit 1
-          fi
+          monsters = Path(
+              "app/src/main/assets/monsters.csv"
+          )
 
-          echo "========================================"
-          echo "monsters.csv found"
-          echo "========================================"
+          breeding = Path(
+              "app/src/main/assets/breeding.csv"
+          )
 
-          ls -lh "$CSV"
+          if not monsters.is_file():
+              raise SystemExit(
+                  "ERROR: monsters.csv not found"
+              )
 
-          HEADER="$(
-            head -n 1 "$CSV" \
-              | sed 's/^\xEF\xBB\xBF//' \
-              | tr -d '\r'
-          )"
+          if not breeding.is_file():
+              raise SystemExit(
+                  "ERROR: breeding.csv not found"
+              )
 
-          echo
-          echo "CSV header:"
-          echo "$HEADER"
+          # --------------------------------------
+          # monsters.csv
+          # --------------------------------------
+          with monsters.open(
+              "r",
+              encoding="utf-8-sig",
+              newline=""
+          ) as f:
+              rows = list(csv.DictReader(f))
 
-          if [ "$HEADER" != "$EXPECTED" ]; then
-            echo
-            echo "ERROR: Invalid CSV header."
-            echo
-            echo "Expected:"
-            echo "$EXPECTED"
-            echo
-            echo "Actual:"
-            echo "$HEADER"
-            exit 1
-          fi
+          expected_monster_header = [
+              "no",
+              "name",
+              "rank",
+              "family",
+              "size"
+          ]
 
-          DATA_LINES=$(( $(wc -l < "$CSV") - 1 ))
+          if len(rows) != 659:
+              raise SystemExit(
+                  "ERROR: monsters.csv expected "
+                  f"659 rows, found {len(rows)}"
+              )
 
-          echo
-          echo "Monster data rows:"
-          echo "$DATA_LINES"
+          if list(rows[0].keys()) != expected_monster_header:
+              raise SystemExit(
+                  "ERROR: monsters.csv header is invalid"
+              )
 
-          if [ "$DATA_LINES" -ne 659 ]; then
-            echo
-            echo "ERROR:"
-            echo "Expected exactly 659 monster rows."
-            echo "Actual: $DATA_LINES"
-            exit 1
-          fi
+          numbers = []
 
-          echo
-          echo "CSV validation OK."
+          for row in rows:
+              try:
+                  numbers.append(int(row["no"]))
+              except Exception:
+                  raise SystemExit(
+                      "ERROR: invalid monster No."
+                  )
 
-          echo
-          echo "CSV sample:"
-          head -n 6 "$CSV"
+          if sorted(numbers) != list(range(1, 660)):
+              raise SystemExit(
+                  "ERROR: monsters.csv must contain "
+                  "No.1 through No.659 exactly once"
+              )
+
+          # --------------------------------------
+          # breeding.csv
+          # --------------------------------------
+          with breeding.open(
+              "r",
+              encoding="utf-8-sig",
+              newline=""
+          ) as f:
+              breed = list(csv.DictReader(f))
+
+          if not breed:
+              raise SystemExit(
+                  "ERROR: breeding.csv is empty"
+              )
+
+          required_breeding_columns = {
+              "recipe_id",
+              "result_no",
+              "result_name",
+              "recipe_type",
+              "parent1",
+              "parent2",
+              "parent3",
+              "parent4"
+          }
+
+          actual_columns = set(
+              breed[0].keys()
+          )
+
+          if not required_breeding_columns.issubset(
+              actual_columns
+          ):
+              raise SystemExit(
+                  "ERROR: breeding.csv header is invalid"
+              )
+
+          print(
+              f"monsters.csv OK: "
+              f"{len(rows)} monsters"
+          )
+
+          print(
+              f"breeding.csv OK: "
+              f"{len(breed)} recipes"
+          )
+          PY
 
 
       # ==================================================
       # 7. Set up Java 17
       #
-      # IMPORTANT:
-      # Gradle cache is intentionally disabled here.
-      #
-      # The Android project exists under RUNNER_TEMP after
-      # ZIP extraction, not directly inside the checked-out
-      # GitHub repository.
-      #
-      # setup-java's Gradle cache dependency lookup caused
-      # the previous build failure.
+      # 前回成功した構成と同じく、
+      # Gradle cache は使用しません。
       # ==================================================
       - name: Set up Java
         uses: actions/setup-java@v5
@@ -275,9 +311,8 @@ jobs:
       - name: Accept Android SDK licenses
         shell: bash
         run: |
-          set -euo pipefail
-
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          yes | sdkmanager --licenses \
+            >/dev/null 2>&1 || true
 
 
       # ==================================================
@@ -311,10 +346,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "========================================"
-          echo "Searching for APK"
-          echo "========================================"
-
           APK_FILE="$(
             find app/build/outputs/apk/debug \
               -type f \
@@ -325,27 +356,21 @@ jobs:
           if [ -z "$APK_FILE" ]; then
             echo "ERROR: Debug APK was not found."
             echo
-            echo "Build output files:"
-
+            echo "Build output:"
             find app/build/outputs \
               -type f \
               2>/dev/null \
               | sort || true
-
             exit 1
           fi
 
           APK_ABS="$(realpath "$APK_FILE")"
 
-          echo
-          echo "APK found:"
-          ls -lh "$APK_ABS"
-
-          echo
-          echo "APK path:"
+          echo "APK:"
           echo "$APK_ABS"
 
-          echo "apk_file=$APK_ABS" >> "$GITHUB_OUTPUT"
+          echo "apk_file=$APK_ABS" \
+            >> "$GITHUB_OUTPUT"
 
 
       # ==================================================
@@ -354,7 +379,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: terrysp-monster-manager-debug
+          name: terrysp-monster-manager-breeding-debug
           path: ${{ steps.find_apk.outputs.apk_file }}
           if-no-files-found: error
           retention-days: 14
@@ -368,7 +393,7 @@ jobs:
         shell: bash
         run: |
           echo "========================================"
-          echo "TerrySP Monster Manager"
+          echo "TerrySP Monster Manager v2.0"
           echo "Build Summary"
           echo "========================================"
 
