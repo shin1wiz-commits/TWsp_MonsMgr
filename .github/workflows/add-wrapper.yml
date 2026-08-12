@@ -30,24 +30,22 @@ jobs:
         shell: bash
         run: |
           rm -rf "$GITHUB_WORKSPACE/project"
-
           mkdir -p "$GITHUB_WORKSPACE/project"
 
           unzip -o "$ZIP" -d "$GITHUB_WORKSPACE/project"
 
-          echo "Extracted files:"
-          find "$GITHUB_WORKSPACE/project" -maxdepth 3 -type f | head -100
+          echo "Project extracted."
 
       - name: Find Android project
         shell: bash
         run: |
           SETTINGS=$(find "$GITHUB_WORKSPACE/project" \
-            -name "settings.gradle" \
-            -o -name "settings.gradle.kts" \
-            | head -n 1)
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -type f | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
             echo "ERROR: settings.gradle or settings.gradle.kts not found"
+            find "$GITHUB_WORKSPACE/project" -maxdepth 4 -type f
             exit 1
           fi
 
@@ -71,39 +69,41 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          echo "Generating Gradle Wrapper..."
+          echo "=== Generating Gradle Wrapper ==="
 
           gradle wrapper --gradle-version 8.7
 
+          chmod +x gradlew
+
           echo ""
-          echo "=== Wrapper check ==="
+          echo "=== Checking Wrapper ==="
 
           test -f gradlew
           test -f gradle/wrapper/gradle-wrapper.jar
           test -f gradle/wrapper/gradle-wrapper.properties
 
-          chmod +x gradlew
-
+          echo "gradlew:"
           ls -lh gradlew
+
+          echo ""
+          echo "gradle/wrapper:"
           ls -lh gradle/wrapper/
 
           echo ""
           echo "Gradle Wrapper generated successfully."
 
-      - name: Create new ZIP
+      - name: Create ZIP
         shell: bash
         run: |
-          OUTPUT="$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
+          OUTPUT="$RUNNER_TEMP/TerrySPMonsterManager_With_GradleWrapper.zip"
 
-          echo "Output ZIP:"
+          echo "=== Creating ZIP ==="
+          echo "Output:"
           echo "$OUTPUT"
 
           rm -f "$OUTPUT"
 
           cd "$PROJECT_DIR"
-
-          echo ""
-          echo "=== Creating ZIP ==="
 
           zip -r "$OUTPUT" . \
             -x ".gradle/*" \
@@ -111,39 +111,60 @@ jobs:
             -x "app/build/*"
 
           echo ""
-          echo "=== ZIP creation finished ==="
+          echo "=== ZIP command finished ==="
 
           if [ ! -f "$OUTPUT" ]; then
-            echo "ERROR: ZIP was not created"
+            echo "ERROR: ZIP file was not created."
+            echo ""
+            echo "RUNNER_TEMP:"
+            ls -la "$RUNNER_TEMP"
             exit 1
           fi
 
+          echo ""
+          echo "=== ZIP successfully created ==="
           ls -lh "$OUTPUT"
+
+          echo "OUTPUT=$OUTPUT" >> "$GITHUB_ENV"
 
       - name: Check ZIP contents
         shell: bash
         run: |
-          OUTPUT="$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
+          echo "=== Checking ZIP contents ==="
 
-          echo "=== Checking ZIP ==="
-
-          test -f "$OUTPUT"
+          if [ ! -f "$OUTPUT" ]; then
+            echo "ERROR: Output ZIP does not exist:"
+            echo "$OUTPUT"
+            exit 1
+          fi
 
           unzip -t "$OUTPUT"
 
           echo ""
-          echo "=== Checking Gradle Wrapper inside ZIP ==="
+          echo "=== Checking Gradle Wrapper ==="
 
-          unzip -l "$OUTPUT" | grep "gradlew"
-          unzip -l "$OUTPUT" | grep "gradle/wrapper/gradle-wrapper.jar"
-          unzip -l "$OUTPUT" | grep "gradle/wrapper/gradle-wrapper.properties"
+          if ! unzip -l "$OUTPUT" | grep -q "gradlew"; then
+            echo "ERROR: gradlew not found in ZIP"
+            exit 1
+          fi
+
+          if ! unzip -l "$OUTPUT" | grep -q "gradle/wrapper/gradle-wrapper.jar"; then
+            echo "ERROR: gradle-wrapper.jar not found in ZIP"
+            exit 1
+          fi
+
+          if ! unzip -l "$OUTPUT" | grep -q "gradle/wrapper/gradle-wrapper.properties"; then
+            echo "ERROR: gradle-wrapper.properties not found in ZIP"
+            exit 1
+          fi
 
           echo ""
-          echo "ZIP check successful."
+          echo "=== ZIP CHECK SUCCESS ==="
+          echo "Gradle Wrapper is inside the ZIP."
 
       - name: Upload new ZIP
         uses: actions/upload-artifact@v4
         with:
           name: TerrySPMonsterManager-With-GradleWrapper
-          path: ${{ github.workspace }}/TerrySPMonsterManager_With_GradleWrapper.zip
+          path: ${{ env.OUTPUT }}
           if-no-files-found: error
