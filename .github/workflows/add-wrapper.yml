@@ -13,7 +13,7 @@ jobs:
 
       - name: Find project ZIP
         run: |
-          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+          ZIP=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name "*.zip" | head -n 1)
 
           if [ -z "$ZIP" ]; then
             echo "ZIP file not found"
@@ -21,26 +21,27 @@ jobs:
           fi
 
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
-          echo "Found ZIP: $ZIP"
+          echo "Found: $ZIP"
 
-      - name: Extract ZIP
+      - name: Extract project
         run: |
-          mkdir -p project
-          unzip -o "$ZIP" -d project
+          rm -rf "$GITHUB_WORKSPACE/project"
+          mkdir -p "$GITHUB_WORKSPACE/project"
+          unzip -o "$ZIP" -d "$GITHUB_WORKSPACE/project"
 
-      - name: Find Gradle project
+      - name: Find Android project
         run: |
-          SETTINGS=$(find project -name "settings.gradle*" -type f | head -n 1)
+          SETTINGS=$(find "$GITHUB_WORKSPACE/project" -name "settings.gradle*" -type f | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
-            echo "settings.gradle not found"
+            echo "settings.gradle or settings.gradle.kts not found"
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project: $PROJECT_DIR"
+          echo "Android project: $PROJECT_DIR"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -56,12 +57,26 @@ jobs:
         run: |
           gradle wrapper --gradle-version 8.7
 
-      - name: Create new ZIP
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          zip -r "$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip" .
+          echo "Wrapper files:"
+          ls -l gradlew
+          ls -l gradle/wrapper/
 
-          echo "Created:"
+      - name: Create new ZIP
+        run: |
+          OUTPUT="/tmp/TerrySPMonsterManager_With_GradleWrapper.zip"
+
+          cd "$PROJECT_DIR"
+
+          rm -f "$OUTPUT"
+
+          zip -r "$OUTPUT" .
+
+          echo "ZIP created:"
+          ls -lh "$OUTPUT"
+
+          cp "$OUTPUT" "$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
+
+          echo "Final ZIP:"
           ls -lh "$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
 
       - name: Upload new ZIP
