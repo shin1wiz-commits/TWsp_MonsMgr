@@ -12,47 +12,51 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Find project ZIP
+        shell: bash
         run: |
-          ZIP=$(find "$GITHUB_WORKSPACE" \
-            -maxdepth 1 \
-            -type f \
-            -name "*.zip" \
-            | head -n 1)
+          ZIP=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name "*.zip" | head -n 1)
 
           if [ -z "$ZIP" ]; then
-            echo "ZIP file not found"
+            echo "ERROR: ZIP file not found"
             exit 1
           fi
 
+          echo "Found ZIP:"
+          echo "$ZIP"
+
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
-          echo "Found: $ZIP"
 
       - name: Extract project
+        shell: bash
         run: |
           rm -rf "$GITHUB_WORKSPACE/project"
+
           mkdir -p "$GITHUB_WORKSPACE/project"
 
-          unzip -o "$ZIP" \
-            -d "$GITHUB_WORKSPACE/project"
+          unzip -o "$ZIP" -d "$GITHUB_WORKSPACE/project"
+
+          echo "Extracted files:"
+          find "$GITHUB_WORKSPACE/project" -maxdepth 3 -type f | head -100
 
       - name: Find Android project
+        shell: bash
         run: |
           SETTINGS=$(find "$GITHUB_WORKSPACE/project" \
-            -name "settings.gradle*" \
-            -type f \
+            -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
             | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
-            echo "settings.gradle or settings.gradle.kts not found"
+            echo "ERROR: settings.gradle or settings.gradle.kts not found"
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
           echo "Android project:"
           echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -65,41 +69,77 @@ jobs:
 
       - name: Generate Gradle Wrapper
         working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
+          echo "Generating Gradle Wrapper..."
+
           gradle wrapper --gradle-version 8.7
 
-          echo "=== Gradle Wrapper ==="
+          echo ""
+          echo "=== Wrapper check ==="
+
+          test -f gradlew
+          test -f gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.properties
+
+          chmod +x gradlew
+
           ls -lh gradlew
           ls -lh gradle/wrapper/
 
-      - name: Create new ZIP
-        run: |
-          cd "$PROJECT_DIR"
+          echo ""
+          echo "Gradle Wrapper generated successfully."
 
+      - name: Create new ZIP
+        shell: bash
+        run: |
           OUTPUT="$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
+
+          echo "Output ZIP:"
+          echo "$OUTPUT"
 
           rm -f "$OUTPUT"
 
-          echo "Creating ZIP..."
+          cd "$PROJECT_DIR"
+
+          echo ""
+          echo "=== Creating ZIP ==="
 
           zip -r "$OUTPUT" . \
             -x ".gradle/*" \
-            -x "*/.gradle/*" \
             -x "build/*" \
-            -x "*/build/*" \
-            -x "*.zip"
+            -x "app/build/*"
 
-          echo "ZIP creation finished."
+          echo ""
+          echo "=== ZIP creation finished ==="
 
-          echo "Checking ZIP contents..."
+          if [ ! -f "$OUTPUT" ]; then
+            echo "ERROR: ZIP was not created"
+            exit 1
+          fi
+
+          ls -lh "$OUTPUT"
+
+      - name: Check ZIP contents
+        shell: bash
+        run: |
+          OUTPUT="$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
+
+          echo "=== Checking ZIP ==="
+
+          test -f "$OUTPUT"
+
+          unzip -t "$OUTPUT"
+
+          echo ""
+          echo "=== Checking Gradle Wrapper inside ZIP ==="
 
           unzip -l "$OUTPUT" | grep "gradlew"
-
           unzip -l "$OUTPUT" | grep "gradle/wrapper/gradle-wrapper.jar"
-
           unzip -l "$OUTPUT" | grep "gradle/wrapper/gradle-wrapper.properties"
 
-          echo "Gradle Wrapper ZIP is ready."
+          echo ""
+          echo "ZIP check successful."
 
       - name: Upload new ZIP
         uses: actions/upload-artifact@v4
