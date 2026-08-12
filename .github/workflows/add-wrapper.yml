@@ -1,4 +1,4 @@
-name: Add Gradle Wrapper to ZIP
+name: Add Gradle Wrapper
 
 on:
   workflow_dispatch:
@@ -23,29 +23,24 @@ jobs:
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
           echo "Found ZIP: $ZIP"
 
-      - name: Extract project
+      - name: Extract ZIP
         run: |
           mkdir -p project
           unzip -o "$ZIP" -d project
 
-      - name: Find Android project
+      - name: Find Gradle project
         run: |
-          SETTINGS=$(find project \
-            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
-            -type f | head -n 1)
+          SETTINGS=$(find project -name "settings.gradle*" -type f | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
-            echo "settings.gradle.kts not found"
-            find project -maxdepth 5 -type f
+            echo "settings.gradle not found"
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "Android project:"
-          echo "$PROJECT_DIR"
+          echo "Project: $PROJECT_DIR"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -55,42 +50,22 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
 
       - name: Generate Gradle Wrapper
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           gradle wrapper --gradle-version 8.7
 
-          echo "=== Wrapper files ==="
-          find . -maxdepth 3 -type f | sort
-
-      - name: Check Gradle Wrapper
+      - name: Create new ZIP
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          test -f gradlew
-          test -f gradlew.bat
-          test -f gradle/wrapper/gradle-wrapper.jar
-          test -f gradle/wrapper/gradle-wrapper.properties
-
-          echo "Gradle Wrapper OK"
-
-      - name: Create new ZIP
-        run: |
-          OUTPUT="$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
-
-          cd "$PROJECT_DIR"
-
-          zip -r "$OUTPUT" . \
-            -x "*.DS_Store"
+          zip -r "$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip" .
 
           echo "Created:"
-          ls -lh "$OUTPUT"
+          ls -lh "$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
 
       - name: Upload new ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: TerrySPMonsterManager-With-Gradle-Wrapper
+          name: TerrySPMonsterManager-With-GradleWrapper
           path: TerrySPMonsterManager_With_GradleWrapper.zip
-          if-no-files-found: error
