@@ -1,10 +1,12 @@
-name: Build Android APK
+name: build-apk
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    paths:
+      - '*.zip'
+      - '**/*.zip'
+      - '.github/workflows/build-apk.yml'
 
 permissions:
   contents: read
@@ -21,191 +23,211 @@ jobs:
         id: find_zip
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          ZIP=$(find "$GITHUB_WORKSPACE" \
-            -maxdepth 1 \
+          ZIP="$(find "$GITHUB_WORKSPACE" \
             -type f \
-            -iname "*.zip" \
-            | head -n 1 || true)
+            -iname '*.zip' \
+            -not -path '*/.git/*' \
+            | head -n 1 || true)"
 
-          if [ -n "$ZIP" ]; then
-            echo "ZIP=$ZIP" >> "$GITHUB_ENV"
-            echo "FOUND_ZIP=true" >> "$GITHUB_ENV"
-            echo "Found ZIP: $ZIP"
-          else
-            echo "FOUND_ZIP=false" >> "$GITHUB_ENV"
-            echo "No ZIP found at repository root."
-          fi
-
-      - name: Extract project ZIP
-        if: env.FOUND_ZIP == 'true'
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf "$GITHUB_WORKSPACE/project"
-          mkdir -p "$GITHUB_WORKSPACE/project"
-
-          unzip -o "$ZIP" -d "$GITHUB_WORKSPACE/project"
-
-          echo "ZIP extraction completed."
-
-      - name: Locate Android project
-        shell: bash
-        run: |
-          set -e
-
-          if [ "${FOUND_ZIP:-false}" = "true" ]; then
-            ROOT="$GITHUB_WORKSPACE/project"
-          else
-            ROOT="$GITHUB_WORKSPACE"
-          fi
-
-          SETTINGS=$(find "$ROOT" \
-            -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
-            | head -n 1 || true)
-
-          if [ -z "$SETTINGS" ]; then
-            echo "ERROR: settings.gradle or settings.gradle.kts was not found."
-
-            echo
-            echo "Project files:"
-            find "$ROOT" -maxdepth 6 -type f | head -300
-
+          if [ -z "$ZIP" ]; then
+            echo 'ERROR: project ZIP was not found.'
+            echo 'Put the Android project ZIP in the repository.'
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$SETTINGS")
+          echo "Using ZIP: $ZIP"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+      - name: Extract project ZIP
+        id: extract_zip
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          echo "Android project directory:"
+          ZIP="${{ steps.find_zip.outputs.zip }}"
+          EXTRACT_DIR="$RUNNER_TEMP/project"
+
+          rm -rf "$EXTRACT_DIR"
+          mkdir -p "$EXTRACT_DIR"
+
+          echo "Extracting:"
+          echo "$ZIP"
+
+          unzip -q "$ZIP" -d "$EXTRACT_DIR"
+
+          echo "Extracted files:"
+          find "$EXTRACT_DIR" -maxdepth 5 -type f | sort | head -n 300
+
+          echo "Extracted to: $EXTRACT_DIR"
+          echo "extract_dir=$EXTRACT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Locate Android project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="${{ steps.extract_zip.outputs.extract_dir }}"
+
+          SETTINGS="$(
+            find "$ROOT" \
+              -type f \
+              -name 'settings.gradle' -o -name 'settings.gradle.kts' \
+              -print -quit || true
+          )"
+
+          if [ -z "$SETTINGS" ]; then
+            echo 'ERROR: settings.gradle or settings.gradle.kts was not found after ZIP extraction.'
+            echo ''
+            echo 'Extracted files:'
+            find "$ROOT" -maxdepth 6 -type f | sort | head -n 500
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS")"
+
+          echo "Android project:"
           echo "$PROJECT_DIR"
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Check Gradle Wrapper
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
+          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
 
           if [ ! -f "$PROJECT_DIR/gradlew" ]; then
-            echo "ERROR: gradlew not found."
-            exit 1
-          fi
-
-          if [ ! -d "$PROJECT_DIR/gradle/wrapper" ]; then
-            echo "ERROR: gradle/wrapper directory not found."
+            echo 'ERROR: gradlew was not found.'
             exit 1
           fi
 
           chmod +x "$PROJECT_DIR/gradlew"
 
-          echo "Gradle Wrapper OK."
+          if [ ! -f "$PROJECT_DIR/gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo 'ERROR: Gradle Wrapper properties were not found.'
+            exit 1
+          fi
+
+          echo 'Gradle Wrapper OK'
 
       - name: Check monsters.csv
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
+          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
           CSV="$PROJECT_DIR/app/src/main/assets/monsters.csv"
-
-          echo "Checking:"
-          echo "$CSV"
 
           if [ ! -f "$CSV" ]; then
-            echo "ERROR: monsters.csv not found."
+            echo "ERROR: monsters.csv was not found:"
+            echo "$CSV"
             exit 1
           fi
 
-          echo
-          echo "File information:"
+          echo "monsters.csv found:"
           ls -lh "$CSV"
 
-          echo
-          echo "Raw first line:"
-          head -n 1 "$CSV" | cat -A
+          python3 - "$CSV" <<'PY'
+          import csv
+          import sys
 
-          # Remove UTF-8 BOM and CRLF ending.
-          HEADER=$(head -n 1 "$CSV" \
-            | sed 's/^\xEF\xBB\xBF//' \
-            | tr -d '\r')
+          path = sys.argv[1]
 
-          EXPECTED="no,name,rank,family,size"
+          with open(
+              path,
+              'r',
+              encoding='utf-8-sig',
+              newline=''
+          ) as f:
+              rows = list(csv.reader(f))
 
-          echo
-          echo "Normalized header:"
-          echo "$HEADER"
+          if not rows:
+              raise SystemExit(
+                  'ERROR: monsters.csv is empty'
+              )
 
-          if [ "$HEADER" != "$EXPECTED" ]; then
-            echo
-            echo "ERROR: Invalid CSV header."
-            echo "Expected:"
-            echo "$EXPECTED"
-            echo "Actual:"
-            echo "$HEADER"
-            exit 1
-          fi
+          header = [x.strip() for x in rows[0]]
 
-          echo
-          echo "Header OK."
+          expected = [
+              'no',
+              'name',
+              'rank',
+              'family',
+              'size'
+          ]
 
-          # Count non-empty data rows.
-          ROWS=$(tail -n +2 "$CSV" \
-            | tr -d '\r' \
-            | grep -c '[^[:space:]]' || true)
+          if header != expected:
+              raise SystemExit(
+                  f'ERROR: Invalid CSV header: {header!r}'
+              )
 
-          echo "Monster data rows: $ROWS"
+          data = rows[1:]
 
-          if [ "$ROWS" -ne 659 ]; then
-            echo
-            echo "ERROR: Expected 659 monster rows."
-            echo "Actual: $ROWS"
-            exit 1
-          fi
+          if len(data) != 659:
+              raise SystemExit(
+                  f'ERROR: Expected 659 monster rows, found {len(data)}'
+              )
 
-          echo
-          echo "monsters.csv check OK."
-          echo "659 monster records detected."
+          numbers = []
 
-      - name: Show CSV sample
-        shell: bash
-        run: |
-          set -e
+          for line_number, row in enumerate(data, start=2):
 
-          CSV="$PROJECT_DIR/app/src/main/assets/monsters.csv"
+              if len(row) != 5:
+                  raise SystemExit(
+                      f'ERROR: line {line_number}: '
+                      f'expected 5 columns, found {len(row)}'
+                  )
 
-          echo "================================"
-          echo "CSV HEAD"
-          echo "================================"
+              try:
+                  number = int(row[0].strip())
+              except ValueError:
+                  raise SystemExit(
+                      f'ERROR: line {line_number}: '
+                      f'invalid No: {row[0]!r}'
+                  )
 
-          head -n 6 "$CSV"
+              numbers.append(number)
 
-          echo
-          echo "================================"
-          echo "CSV TAIL"
-          echo "================================"
+          expected_numbers = list(range(1, 660))
 
-          tail -n 5 "$CSV"
+          if sorted(numbers) != expected_numbers:
+              raise SystemExit(
+                  'ERROR: monster No. must contain '
+                  'every value from 1 through 659 exactly once'
+              )
 
-      - name: Set up Java 17
+          print(
+              'CSV OK: '
+              'header + 659 rows + No.1..659 verified'
+          )
+          PY
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
+          cache: gradle
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Build Debug APK
-        working-directory: ${{ env.PROJECT_DIR }}
+      - name: Accept Android SDK licenses
         shell: bash
         run: |
-          set -e
+          yes | sdkmanager --licenses >/dev/null || true
 
-          echo "================================"
-          echo "Building Debug APK"
-          echo "================================"
+      - name: Build Debug APK
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+
+          chmod +x ./gradlew
 
           ./gradlew \
             --no-daemon \
@@ -216,47 +238,38 @@ jobs:
         id: apk
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          APK=$(find "$PROJECT_DIR/app/build/outputs/apk" \
-            -type f \
-            -name "*.apk" \
-            | head -n 1 || true)
+          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
+
+          APK="$(
+            find "$PROJECT_DIR/app/build/outputs/apk" \
+              -type f \
+              -name '*.apk' \
+              | head -n 1 || true
+          )"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated."
-
-            echo
-            echo "APK output directory:"
-            find "$PROJECT_DIR/app/build/outputs" \
-              -type f \
-              2>/dev/null || true
-
+            echo 'ERROR: APK was not generated.'
             exit 1
           fi
 
-          echo "APK=$APK" >> "$GITHUB_ENV"
+          echo "APK:"
+          echo "$APK"
 
-          echo
-          echo "APK generated successfully:"
-          ls -lh "$APK"
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: TerrySPMonsterManager-APK
-          path: ${{ env.APK }}
+          name: TerrySPMonsterManager-debug
+          path: ${{ steps.apk.outputs.apk }}
           if-no-files-found: error
-          retention-days: 30
 
       - name: Build summary
-        if: always()
         shell: bash
         run: |
-          echo "================================"
-          echo "BUILD SUMMARY"
-          echo "================================"
-          echo "Project: $PROJECT_DIR"
-          echo "CSV: $PROJECT_DIR/app/src/main/assets/monsters.csv"
-          echo "Monster records: 659"
-          echo "================================"
+          echo '## Build successful' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '659件の monsters.csv を検証しました。' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Debug APK を正常に生成しました。
