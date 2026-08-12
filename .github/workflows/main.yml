@@ -26,36 +26,96 @@ jobs:
           set -e
 
           echo "=== ZIP files ==="
-          find . -maxdepth 3 -type f -iname "*.zip" -print
 
-          ZIP_FILE="$(find . -maxdepth 3 -type f -iname "*.zip" | head -n 1)"
+          find . \
+            -maxdepth 5 \
+            -type f \
+            -iname "*.zip" \
+            -print
+
+          ZIP_FILE="$(
+            find . \
+              -maxdepth 5 \
+              -type f \
+              -iname "*.zip" \
+              | head -n 1
+          )"
 
           if [ -z "$ZIP_FILE" ]; then
             echo "ERROR: Project ZIP not found."
             exit 1
           fi
 
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-          echo "Found ZIP: $ZIP_FILE"
+          echo "Found ZIP:"
+          echo "$ZIP_FILE"
 
-      # 4. ZIPを一時ディレクトリへ展開
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      # 4. ZIPを展開
+      #    ZIPの中にZIPがある場合にも対応
       - name: Extract project
         shell: bash
         run: |
           set -e
 
-          rm -rf "$GITHUB_WORKSPACE/_temp"
-          mkdir -p "$GITHUB_WORKSPACE/_temp/android-project"
+          ROOT="$GITHUB_WORKSPACE/_temp/android-project"
 
-          echo "=== Extracting ==="
-          unzip -q "$ZIP_FILE" \
-            -d "$GITHUB_WORKSPACE/_temp/android-project"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
 
-          echo "=== Extracted files ==="
-          find "$GITHUB_WORKSPACE/_temp/android-project" \
-            -maxdepth 4 -type f | sort | head -n 200
+          echo "=== Extract outer ZIP ==="
 
-      # 5. settings.gradle / settings.gradle.kts を探す
+          unzip -q "$ZIP_FILE" -d "$ROOT"
+
+          echo "=== After outer ZIP ==="
+
+          find "$ROOT" \
+            -maxdepth 5 \
+            -print
+
+          # ZIPの中にさらにZIPがある場合、
+          # 最大5階層まで自動的に展開する
+          for i in 1 2 3 4 5; do
+
+            NESTED_ZIP="$(
+              find "$ROOT" \
+                -type f \
+                -iname "*.zip" \
+                | head -n 1
+            )"
+
+            if [ -z "$NESTED_ZIP" ]; then
+              break
+            fi
+
+            echo "=== Nested ZIP found ==="
+            echo "$NESTED_ZIP"
+
+            TEMP_EXTRACT="$ROOT/__nested_extract_$i"
+
+            mkdir -p "$TEMP_EXTRACT"
+
+            unzip -q "$NESTED_ZIP" \
+              -d "$TEMP_EXTRACT"
+
+            rm -f "$NESTED_ZIP"
+
+            # 展開した中身をROOTへ移動
+            cp -a "$TEMP_EXTRACT"/. "$ROOT"/
+
+            rm -rf "$TEMP_EXTRACT"
+
+            echo "=== Nested ZIP extracted ==="
+
+          done
+
+          echo "=== Final extracted files ==="
+
+          find "$ROOT" \
+            -maxdepth 6 \
+            -print
+
+      # 5. Gradleプロジェクトを探す
       - name: Find Gradle project
         shell: bash
         run: |
@@ -68,14 +128,24 @@ jobs:
           SETTINGS_FILE="$(
             find "$ROOT" \
               -type f \
-              \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+              \( \
+                -name "settings.gradle" \
+                -o \
+                -name "settings.gradle.kts" \
+              \) \
               | head -n 1
           )"
 
           if [ -z "$SETTINGS_FILE" ]; then
+
             echo "ERROR: settings.gradle or settings.gradle.kts not found."
-            echo "=== Extracted directory ==="
-            find "$ROOT" -maxdepth 5 -print
+
+            echo "=== Final extracted directory ==="
+
+            find "$ROOT" \
+              -maxdepth 8 \
+              -print
+
             exit 1
           fi
 
@@ -87,16 +157,16 @@ jobs:
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      # 6. Gradle Wrapperの存在確認
+      # 6. Gradle Wrapperを確認
       - name: Check Gradle Wrapper
         shell: bash
         run: |
           set -e
 
-          echo "=== Project directory ==="
-          echo "$PROJECT_DIR"
-
           cd "$PROJECT_DIR"
+
+          echo "=== Project directory ==="
+          pwd
 
           echo "=== Project files ==="
           ls -la
@@ -128,6 +198,7 @@ jobs:
 
           chmod +x ./gradlew
 
+          echo "=== gradlew permissions ==="
           ls -l ./gradlew
 
       # 8. Gradleバージョン確認
@@ -151,7 +222,11 @@ jobs:
           echo "=== Gradle project ==="
           pwd
 
+          echo "=== Project root ==="
+          ls -la
+
           echo "=== settings.gradle ==="
+
           if [ -f "settings.gradle.kts" ]; then
             cat settings.gradle.kts
           elif [ -f "settings.gradle" ]; then
@@ -164,7 +239,7 @@ jobs:
             --stacktrace \
             --info
 
-      # 10. APKが生成されたか確認
+      # 10. APK生成確認
       - name: Check APK
         shell: bash
         run: |
@@ -191,13 +266,14 @@ jobs:
 
           echo "APK_COUNT=$APK_COUNT"
 
-      # 11. APKをartifact用ディレクトリへコピー
+      # 11. APKをartifact用フォルダへコピー
       - name: Prepare APK
         shell: bash
         run: |
           set -e
 
           rm -rf "$GITHUB_WORKSPACE/apk-output"
+
           mkdir -p "$GITHUB_WORKSPACE/apk-output"
 
           find "$PROJECT_DIR" \
@@ -206,9 +282,10 @@ jobs:
             -exec cp {} "$GITHUB_WORKSPACE/apk-output/" \;
 
           echo "=== APK output ==="
+
           ls -lh "$GITHUB_WORKSPACE/apk-output"
 
-      # 12. APKをGitHub Actionsからダウンロード可能にする
+      # 12. APKをGitHub ActionsのArtifactsへアップロード
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
