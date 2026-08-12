@@ -1,12 +1,12 @@
-name: build-apk
+name: build
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - '*.zip'
-      - '**/*.zip'
-      - '.github/workflows/build-apk.yml'
+      - "*.zip"
+      - "**/*.zip"
+      - ".github/workflows/build-apk.yml"
 
 permissions:
   contents: read
@@ -25,19 +25,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          ZIP="$(find "$GITHUB_WORKSPACE" \
-            -type f \
-            -iname '*.zip' \
-            -not -path '*/.git/*' \
-            | head -n 1 || true)"
+          ZIP=""
+
+          while IFS= read -r file; do
+            ZIP="$file"
+            break
+          done < <(
+            find "$GITHUB_WORKSPACE" \
+              -type f \
+              -name "*.zip" \
+              -not -path "*/.git/*"
+          )
 
           if [ -z "$ZIP" ]; then
-            echo 'ERROR: project ZIP was not found.'
-            echo 'Put the Android project ZIP in the repository.'
+            echo "ERROR: project ZIP was not found."
             exit 1
           fi
 
-          echo "Using ZIP: $ZIP"
+          echo "Using ZIP:"
+          echo "$ZIP"
+
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
 
       - name: Extract project ZIP
@@ -57,10 +64,14 @@ jobs:
 
           unzip -q "$ZIP" -d "$EXTRACT_DIR"
 
-          echo "Extracted files:"
-          find "$EXTRACT_DIR" -maxdepth 5 -type f | sort | head -n 300
+          echo ""
+          echo "Extracted project files:"
+          find "$EXTRACT_DIR" -type f | sort
 
-          echo "Extracted to: $EXTRACT_DIR"
+          echo ""
+          echo "Extracted to:"
+          echo "$EXTRACT_DIR"
+
           echo "extract_dir=$EXTRACT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Locate Android project
@@ -71,25 +82,39 @@ jobs:
 
           ROOT="${{ steps.extract_zip.outputs.extract_dir }}"
 
-          SETTINGS="$(
-            find "$ROOT" \
-              -type f \
-              -name 'settings.gradle' -o -name 'settings.gradle.kts' \
-              -print -quit || true
-          )"
+          echo "Searching Android project in:"
+          echo "$ROOT"
+
+          SETTINGS=""
+
+          while IFS= read -r file; do
+            SETTINGS="$file"
+            break
+          done < <(
+            find "$ROOT" -type f | grep -E '/settings\.gradle(\.kts)?$' || true
+          )
 
           if [ -z "$SETTINGS" ]; then
-            echo 'ERROR: settings.gradle or settings.gradle.kts was not found after ZIP extraction.'
-            echo ''
-            echo 'Extracted files:'
-            find "$ROOT" -maxdepth 6 -type f | sort | head -n 500
+            echo ""
+            echo "ERROR: settings.gradle or settings.gradle.kts was not found."
+            echo ""
+            echo "Extracted files:"
+            find "$ROOT" -type f | sort
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
-          echo "Android project:"
+          echo ""
+          echo "========================================"
+          echo "Android project found"
+          echo "========================================"
+          echo "Settings:"
+          echo "$SETTINGS"
+          echo ""
+          echo "Project:"
           echo "$PROJECT_DIR"
+          echo "========================================"
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
@@ -100,19 +125,21 @@ jobs:
 
           PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
 
+          echo "Checking Gradle Wrapper..."
+
           if [ ! -f "$PROJECT_DIR/gradlew" ]; then
-            echo 'ERROR: gradlew was not found.'
+            echo "ERROR: gradlew was not found."
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo "ERROR: gradle-wrapper.properties was not found."
             exit 1
           fi
 
           chmod +x "$PROJECT_DIR/gradlew"
 
-          if [ ! -f "$PROJECT_DIR/gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo 'ERROR: Gradle Wrapper properties were not found.'
-            exit 1
-          fi
-
-          echo 'Gradle Wrapper OK'
+          echo "Gradle Wrapper OK"
 
       - name: Check monsters.csv
         shell: bash
@@ -122,13 +149,16 @@ jobs:
           PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
           CSV="$PROJECT_DIR/app/src/main/assets/monsters.csv"
 
+          echo "Checking:"
+          echo "$CSV"
+
           if [ ! -f "$CSV" ]; then
-            echo "ERROR: monsters.csv was not found:"
-            echo "$CSV"
+            echo "ERROR: monsters.csv was not found."
             exit 1
           fi
 
-          echo "monsters.csv found:"
+          echo ""
+          echo "File:"
           ls -lh "$CSV"
 
           python3 - "$CSV" <<'PY'
@@ -139,37 +169,40 @@ jobs:
 
           with open(
               path,
-              'r',
-              encoding='utf-8-sig',
-              newline=''
+              "r",
+              encoding="utf-8-sig",
+              newline=""
           ) as f:
               rows = list(csv.reader(f))
 
           if not rows:
               raise SystemExit(
-                  'ERROR: monsters.csv is empty'
+                  "ERROR: monsters.csv is empty"
               )
 
           header = [x.strip() for x in rows[0]]
 
           expected = [
-              'no',
-              'name',
-              'rank',
-              'family',
-              'size'
+              "no",
+              "name",
+              "rank",
+              "family",
+              "size"
           ]
 
           if header != expected:
               raise SystemExit(
-                  f'ERROR: Invalid CSV header: {header!r}'
+                  "ERROR: Invalid CSV header:\n"
+                  f"Expected: {expected}\n"
+                  f"Found:    {header}"
               )
 
           data = rows[1:]
 
           if len(data) != 659:
               raise SystemExit(
-                  f'ERROR: Expected 659 monster rows, found {len(data)}'
+                  "ERROR: Expected 659 monster rows, "
+                  f"but found {len(data)}"
               )
 
           numbers = []
@@ -178,16 +211,17 @@ jobs:
 
               if len(row) != 5:
                   raise SystemExit(
-                      f'ERROR: line {line_number}: '
-                      f'expected 5 columns, found {len(row)}'
+                      f"ERROR: CSV line {line_number}: "
+                      f"expected 5 columns, "
+                      f"found {len(row)}"
                   )
 
               try:
                   number = int(row[0].strip())
               except ValueError:
                   raise SystemExit(
-                      f'ERROR: line {line_number}: '
-                      f'invalid No: {row[0]!r}'
+                      f"ERROR: CSV line {line_number}: "
+                      f"invalid monster No: {row[0]!r}"
                   )
 
               numbers.append(number)
@@ -195,22 +229,36 @@ jobs:
           expected_numbers = list(range(1, 660))
 
           if sorted(numbers) != expected_numbers:
-              raise SystemExit(
-                  'ERROR: monster No. must contain '
-                  'every value from 1 through 659 exactly once'
+              missing = sorted(
+                  set(expected_numbers) - set(numbers)
               )
 
-          print(
-              'CSV OK: '
-              'header + 659 rows + No.1..659 verified'
-          )
+              duplicated = sorted(
+                  {
+                      n for n in numbers
+                      if numbers.count(n) > 1
+                  }
+              )
+
+              raise SystemExit(
+                  "ERROR: Monster numbers are invalid.\n"
+                  f"Missing: {missing}\n"
+                  f"Duplicated: {duplicated}"
+              )
+
+          print("")
+          print("========================================")
+          print("monsters.csv OK")
+          print("659 monsters verified")
+          print("No.1 through No.659 verified")
+          print("========================================")
           PY
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
           cache: gradle
 
       - name: Set up Android SDK
@@ -219,7 +267,7 @@ jobs:
       - name: Accept Android SDK licenses
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - name: Build Debug APK
         shell: bash
@@ -228,6 +276,10 @@ jobs:
           set -euo pipefail
 
           chmod +x ./gradlew
+
+          echo "========================================"
+          echo "Building Debug APK"
+          echo "========================================"
 
           ./gradlew \
             --no-daemon \
@@ -242,19 +294,31 @@ jobs:
 
           PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
 
-          APK="$(
+          APK=""
+
+          while IFS= read -r file; do
+            APK="$file"
+            break
+          done < <(
             find "$PROJECT_DIR/app/build/outputs/apk" \
               -type f \
-              -name '*.apk' \
-              | head -n 1 || true
-          )"
+              -name "*.apk" || true
+          )
 
           if [ -z "$APK" ]; then
-            echo 'ERROR: APK was not generated.'
+            echo "ERROR: APK was not generated."
+
+            echo ""
+            echo "APK output directory:"
+            find "$PROJECT_DIR/app/build/outputs" \
+              -type f \
+              2>/dev/null || true
+
             exit 1
           fi
 
-          echo "APK:"
+          echo ""
+          echo "APK found:"
           echo "$APK"
 
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
@@ -269,7 +333,8 @@ jobs:
       - name: Build summary
         shell: bash
         run: |
-          echo '## Build successful' >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo '659件の monsters.csv を検証しました。' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Debug APK を正常に生成しました。
+          echo "## Build successful" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Android project located successfully." >> "$GITHUB_STEP_SUMMARY"
+          echo "monsters.csv: 659 records verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "Debug APK generated successfully." >> "$GITHUB_STEP_SUMMARY"
