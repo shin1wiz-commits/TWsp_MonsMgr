@@ -8,66 +8,187 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # --------------------------------
-      # 1. リポジトリを取得
-      # --------------------------------
+
+      # ========================================
+      # 1. GitHubリポジトリを取得
+      # ========================================
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --------------------------------
+
+      # ========================================
       # 2. Java 17
-      # --------------------------------
+      # ========================================
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # --------------------------------
-      # 3. ZIPを探す
-      # --------------------------------
+
+      # ========================================
+      # 3. プロジェクトZIPを探す
+      # ========================================
       - name: Find project ZIP
         shell: bash
         run: |
           set -e
 
-          echo "=== ZIP files ==="
-          find . -type f -name "*.zip" -print
+          echo "========================================"
+          echo " ZIP FILE SEARCH"
+          echo "========================================"
+
+          echo "=== All ZIP files in repository ==="
+          find . -type f -iname "*.zip" -print
 
           ZIP_FILE=$(find . -type f \
-            -name "TerrySPMonsterManager-With-GradleWrapper.zip" \
+            -iname "TerrySPMonsterManager-With-GradleWrapper.zip" \
             -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: TerrySPMonsterManager-With-GradleWrapper.zip not found."
+            echo ""
+            echo "ERROR: Project ZIP was not found."
+            echo ""
+            echo "Available ZIP files:"
+            find . -type f -iname "*.zip" -print
             exit 1
           fi
 
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-          echo "Found ZIP:"
+          echo ""
+          echo "Project ZIP found:"
           echo "$ZIP_FILE"
 
-      # --------------------------------
-      # 4. ZIPを展開
-      # --------------------------------
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+
+      # ========================================
+      # 4. ZIPを検査して展開
+      # ========================================
       - name: Extract project
         shell: bash
         run: |
           set -e
 
-          rm -rf "$RUNNER_TEMP/android-project"
-          mkdir -p "$RUNNER_TEMP/android-project"
+          BASE="$RUNNER_TEMP/android-project"
 
-          echo "=== Extracting ZIP ==="
-          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/android-project"
+          rm -rf "$BASE"
+          mkdir -p "$BASE"
 
-          echo "=== Extracted files ==="
-          find "$RUNNER_TEMP/android-project" -maxdepth 5 -type f | sort | head -200
+          echo "========================================"
+          echo " OUTER ZIP"
+          echo "========================================"
 
-      # --------------------------------
-      # 5. settings.gradleを探して
-      #    Gradleプロジェクトのルートを決定
-      # --------------------------------
+          echo "ZIP file:"
+          echo "$ZIP_FILE"
+
+          echo ""
+          echo "=== ZIP information ==="
+          ls -lh "$ZIP_FILE"
+          file "$ZIP_FILE"
+
+          echo ""
+          echo "=== ZIP test ==="
+          unzip -t "$ZIP_FILE"
+
+          echo ""
+          echo "=== ZIP contents ==="
+          unzip -l "$ZIP_FILE"
+
+          echo ""
+          echo "========================================"
+          echo " EXTRACTING OUTER ZIP"
+          echo "========================================"
+
+          unzip -o "$ZIP_FILE" -d "$BASE"
+
+          echo ""
+          echo "=== Files after extraction ==="
+          find "$BASE" -maxdepth 8 -print | sort
+
+
+      # ========================================
+      # 5. ZIPの中にZIPがある場合にも対応
+      # ========================================
+      - name: Extract nested ZIPs
+        shell: bash
+        run: |
+          set -e
+
+          BASE="$RUNNER_TEMP/android-project"
+
+          echo "========================================"
+          echo " SEARCHING FOR NESTED ZIP"
+          echo "========================================"
+
+          FOUND_NESTED=false
+
+          while true; do
+
+            NESTED_ZIP=$(find "$BASE" \
+              -type f \
+              -iname "*.zip" \
+              -print -quit)
+
+            if [ -z "$NESTED_ZIP" ]; then
+              break
+            fi
+
+            FOUND_NESTED=true
+
+            echo ""
+            echo "Nested ZIP found:"
+            echo "$NESTED_ZIP"
+
+            NESTED_DIR="$RUNNER_TEMP/nested-project"
+
+            rm -rf "$NESTED_DIR"
+            mkdir -p "$NESTED_DIR"
+
+            echo ""
+            echo "=== Nested ZIP contents ==="
+            unzip -l "$NESTED_ZIP"
+
+            echo ""
+            echo "=== Extracting nested ZIP ==="
+            unzip -o "$NESTED_ZIP" -d "$NESTED_DIR"
+
+            echo ""
+            echo "=== Nested project files ==="
+            find "$NESTED_DIR" -maxdepth 8 -print | sort
+
+            # 元のZIPを削除して、次の検索で
+            # 同じZIPを再検出しないようにする
+            rm -f "$NESTED_ZIP"
+
+            # 展開した内容をメインディレクトリへ移動
+            cp -a "$NESTED_DIR"/. "$BASE"/
+
+            rm -rf "$NESTED_DIR"
+
+            break
+          done
+
+          if [ "$FOUND_NESTED" = true ]; then
+            echo ""
+            echo "Nested ZIP extraction completed."
+          else
+            echo ""
+            echo "No nested ZIP found."
+            echo "The outer ZIP already contains the project."
+          fi
+
+          echo ""
+          echo "========================================"
+          echo " FINAL EXTRACTED FILES"
+          echo "========================================"
+
+          find "$BASE" -maxdepth 8 -print | sort
+
+
+      # ========================================
+      # 6. settings.gradle / settings.gradle.kts
+      #    を探してGradleルートを決定
+      # ========================================
       - name: Find Gradle project
         shell: bash
         run: |
@@ -75,43 +196,101 @@ jobs:
 
           BASE="$RUNNER_TEMP/android-project"
 
-          echo "=== Searching for settings.gradle ==="
+          echo "========================================"
+          echo " SEARCHING FOR GRADLE PROJECT"
+          echo "========================================"
+
+          echo ""
+          echo "Search root:"
+          echo "$BASE"
+
+          echo ""
+          echo "=== settings.gradle files ==="
+
+          find "$BASE" -type f \
+            \( \
+              -name "settings.gradle" \
+              -o \
+              -name "settings.gradle.kts" \
+            \) \
+            -print
 
           SETTINGS_FILE=$(find "$BASE" -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            \( \
+              -name "settings.gradle" \
+              -o \
+              -name "settings.gradle.kts" \
+            \) \
             -print -quit)
 
           if [ -z "$SETTINGS_FILE" ]; then
+
+            echo ""
             echo "ERROR: settings.gradle or settings.gradle.kts not found."
-            echo "=== Extracted directory ==="
-            find "$BASE" -maxdepth 6 -print
+
+            echo ""
+            echo "=== COMPLETE EXTRACTED DIRECTORY ==="
+            find "$BASE" -maxdepth 10 -print | sort
+
             exit 1
           fi
 
           PROJECT_ROOT=$(dirname "$SETTINGS_FILE")
 
-          echo "SETTINGS_FILE=$SETTINGS_FILE"
-          echo "PROJECT_ROOT=$PROJECT_ROOT"
+          echo ""
+          echo "========================================"
+          echo " GRADLE PROJECT FOUND"
+          echo "========================================"
+
+          echo "SETTINGS_FILE:"
+          echo "$SETTINGS_FILE"
+
+          echo ""
+          echo "PROJECT_ROOT:"
+          echo "$PROJECT_ROOT"
 
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
 
-      # --------------------------------
-      # 6. Gradle Wrapperを確認
-      # --------------------------------
+
+      # ========================================
+      # 7. Gradleプロジェクトの中身を確認
+      # ========================================
+      - name: Inspect Gradle project
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo " GRADLE PROJECT"
+          echo "========================================"
+
+          echo ""
+          echo "Project root:"
+          echo "$PROJECT_ROOT"
+
+          echo ""
+          echo "=== Project files ==="
+          find "$PROJECT_ROOT" -maxdepth 4 -print | sort
+
+          echo ""
+          echo "=== Directory listing ==="
+          ls -la "$PROJECT_ROOT"
+
+
+      # ========================================
+      # 8. Gradle Wrapper確認
+      # ========================================
       - name: Check Gradle Wrapper
         shell: bash
         run: |
           set -e
 
-          echo "=== Project root ==="
-          echo "$PROJECT_ROOT"
-
-          echo "=== Project files ==="
-          ls -la "$PROJECT_ROOT"
+          echo "========================================"
+          echo " CHECK GRADLE WRAPPER"
+          echo "========================================"
 
           if [ ! -f "$PROJECT_ROOT/gradlew" ]; then
             echo "ERROR: gradlew not found."
-            echo "The ZIP must contain gradlew in the same directory as settings.gradle."
             exit 1
           fi
 
@@ -125,11 +304,25 @@ jobs:
             exit 1
           fi
 
-          echo "Gradle Wrapper files OK."
+          echo ""
+          echo "Gradle Wrapper files found."
 
-      # --------------------------------
-      # 7. gradlewを実行可能にする
-      # --------------------------------
+          echo ""
+          echo "gradlew:"
+          ls -lh "$PROJECT_ROOT/gradlew"
+
+          echo ""
+          echo "gradle-wrapper.jar:"
+          ls -lh "$PROJECT_ROOT/gradle/wrapper/gradle-wrapper.jar"
+
+          echo ""
+          echo "gradle-wrapper.properties:"
+          ls -lh "$PROJECT_ROOT/gradle/wrapper/gradle-wrapper.properties"
+
+
+      # ========================================
+      # 9. gradlewを実行可能にする
+      # ========================================
       - name: Make Gradle Wrapper executable
         shell: bash
         run: |
@@ -137,59 +330,125 @@ jobs:
 
           chmod +x "$PROJECT_ROOT/gradlew"
 
+          echo "gradlew permissions:"
           ls -l "$PROJECT_ROOT/gradlew"
 
-      # --------------------------------
-      # 8. Gradleバージョン確認
-      # --------------------------------
+
+      # ========================================
+      # 10. Gradleバージョン確認
+      # ========================================
       - name: Check Gradle version
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
           set -e
 
+          echo "========================================"
+          echo " GRADLE VERSION"
+          echo "========================================"
+
           ./gradlew --version
 
-      # --------------------------------
-      # 9. Debug APKをビルド
-      # --------------------------------
+
+      # ========================================
+      # 11. Debug APKをビルド
+      # ========================================
       - name: Build Debug APK
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
           set -e
 
+          echo "========================================"
+          echo " BUILD DEBUG APK"
+          echo "========================================"
+
           ./gradlew assembleDebug --stacktrace
 
-      # --------------------------------
-      # 10. APK確認
-      # --------------------------------
+
+      # ========================================
+      # 12. APKを検索
+      # ========================================
       - name: Check APK
-        working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
           set -e
 
+          echo "========================================"
+          echo " CHECK APK"
+          echo "========================================"
+
+          echo ""
           echo "=== APK files ==="
 
-          find . -type f -name "*.apk" -print
+          find "$PROJECT_ROOT" \
+            -type f \
+            -name "*.apk" \
+            -print
 
-          APK_COUNT=$(find . -type f -name "*.apk" | wc -l)
+          APK_COUNT=$(find "$PROJECT_ROOT" \
+            -type f \
+            -name "*.apk" | wc -l)
+
+          echo ""
+          echo "APK count:"
+          echo "$APK_COUNT"
 
           if [ "$APK_COUNT" -eq 0 ]; then
+            echo ""
             echo "ERROR: APK was not created."
             exit 1
           fi
 
+          echo ""
           echo "APK created successfully."
 
-      # --------------------------------
-      # 11. APKをArtifactとしてアップロード
-      # --------------------------------
+
+      # ========================================
+      # 13. APKをArtifact用フォルダへコピー
+      # ========================================
+      - name: Prepare APK
+        shell: bash
+        run: |
+          set -e
+
+          APK_DIR="$RUNNER_TEMP/apk-output"
+
+          rm -rf "$APK_DIR"
+          mkdir -p "$APK_DIR"
+
+          echo "========================================"
+          echo " PREPARING APK"
+          echo "========================================"
+
+          APK_FILE=$(find "$PROJECT_ROOT" \
+            -type f \
+            -name "*.apk" \
+            -print -quit)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: APK file not found."
+            exit 1
+          fi
+
+          echo "APK:"
+          echo "$APK_FILE"
+
+          cp "$APK_FILE" "$APK_DIR/TerrySPMonsterManager-debug.apk"
+
+          echo ""
+          echo "Prepared APK:"
+          ls -lh "$APK_DIR/TerrySPMonsterManager-debug.apk"
+
+          echo "APK_DIR=$APK_DIR" >> "$GITHUB_ENV"
+
+
+      # ========================================
+      # 14. APKをArtifactとしてアップロード
+      # ========================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: TerrySPMonsterManager-debug-apk
-          path: |
-            ${{ env.PROJECT_ROOT }}/**/build/outputs/apk/**/*.apk
+          path: ${{ env.APK_DIR }}/TerrySPMonsterManager-debug.apk
           if-no-files-found: error
