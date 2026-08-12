@@ -27,14 +27,18 @@ jobs:
         run: |
           rm -rf "$GITHUB_WORKSPACE/project"
           mkdir -p "$GITHUB_WORKSPACE/project"
+
           unzip -o "$ZIP" -d "$GITHUB_WORKSPACE/project"
 
       - name: Find Android project
         run: |
-          SETTINGS=$(find "$GITHUB_WORKSPACE/project" -name "settings.gradle*" -type f | head -n 1)
+          SETTINGS=$(find "$GITHUB_WORKSPACE/project" \
+            -name "settings.gradle*" \
+            -type f | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
             echo "settings.gradle or settings.gradle.kts not found"
+            find "$GITHUB_WORKSPACE/project" -maxdepth 4 -type f | head -100
             exit 1
           fi
 
@@ -57,30 +61,35 @@ jobs:
         run: |
           gradle wrapper --gradle-version 8.7
 
-          echo "Wrapper files:"
-          ls -l gradlew
-          ls -l gradle/wrapper/
+          echo "=== Wrapper files ==="
+          ls -lh gradlew
+          ls -lh gradle/wrapper/
 
       - name: Create new ZIP
         run: |
-          OUTPUT="/tmp/TerrySPMonsterManager_With_GradleWrapper.zip"
-
-          cd "$PROJECT_DIR"
+          OUTPUT="$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
 
           rm -f "$OUTPUT"
 
-          zip -r "$OUTPUT" .
+          cd "$PROJECT_DIR"
 
-          echo "ZIP created:"
+          zip -r "$OUTPUT" . \
+            -x ".gradle/*" \
+               "build/*" \
+               "**/build/*" \
+               "*.zip"
+
+          echo "=== ZIP created ==="
           ls -lh "$OUTPUT"
 
-          cp "$OUTPUT" "$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
-
-          echo "Final ZIP:"
-          ls -lh "$GITHUB_WORKSPACE/TerrySPMonsterManager_With_GradleWrapper.zip"
+          echo "=== ZIP contents ==="
+          unzip -l "$OUTPUT" | grep -E \
+            '(^|/)(gradlew|gradle/wrapper/gradle-wrapper.jar|gradle/wrapper/gradle-wrapper.properties)$' \
+            || true
 
       - name: Upload new ZIP
         uses: actions/upload-artifact@v4
         with:
           name: TerrySPMonsterManager-With-GradleWrapper
-          path: TerrySPMonsterManager_With_GradleWrapper.zip
+          path: ${{ github.workspace }}/TerrySPMonsterManager_With_GradleWrapper.zip
+          if-no-files-found: error
