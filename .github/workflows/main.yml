@@ -25,7 +25,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       # ----------------------------------------
       # 3. Android SDK
