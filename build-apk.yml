@@ -1,0 +1,209 @@
+name: Build APK from ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "*.zip"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find project ZIP
+        id: find_zip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t ZIPS < <(find . -maxdepth 1 -type f -iname '*.zip' -print)
+
+          if [ "${#ZIPS[@]}" -eq 0 ]; then
+            echo "::error::Project ZIP was not found in the repository root."
+            echo "Upload a .zip file to the repository root."
+            exit 1
+          fi
+
+          if [ "${#ZIPS[@]}" -gt 1 ]; then
+            echo "::error::More than one ZIP file was found:"
+            printf ' - %s\n' "${ZIPS[@]}"
+            echo "Keep only one project ZIP in the repository root."
+            exit 1
+          fi
+
+          ZIP="${ZIPS[0]}"
+          echo "Using ZIP: $ZIP"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Extract project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf _build
+          mkdir -p _build
+
+          unzip -q "${{ steps.find_zip.outputs.zip }}" -d _build
+
+          echo "=== Extracted files ==="
+          find _build -maxdepth 5 -type f | sort | sed -n '1,200p'
+
+      - name: Find Gradle project root
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SETTINGS_FILE="$(find "$GITHUB_WORKSPACE/_build" \
+            -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) \
+            -print -quit)"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::settings.gradle or settings.gradle.kts was not found inside the ZIP."
+            echo "The ZIP must contain a normal Gradle Android project."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+
+          if [ ! -f "$PROJECT_DIR/gradlew" ]; then
+            echo "::error::gradlew was not found next to the Gradle settings file."
+            exit 1
+          fi
+
+          echo "Project root: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Show project structure
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Project root ==="
+          pwd
+
+          echo "=== Project files ==="
+          find . -maxdepth 4 -type f | sort
+
+          echo "=== Gradle files ==="
+          find . -type f \
+            \( -name 'settings.gradle' \
+            -o -name 'settings.gradle.kts' \
+            -o -name 'build.gradle' \
+            -o -name 'build.gradle.kts' \
+            -o -name 'gradle-wrapper.properties' \) \
+            -print
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install scraper dependencies
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: |
+          python -m pip install --disable-pip-version-check \
+            requests \
+            beautifulsoup4
+
+      - name: Generate monster data
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f "tools/scrape_gamewith.py" ]; then
+            echo "=== Running monster data generator ==="
+            python tools/scrape_gamewith.py
+          else
+            echo "tools/scrape_gamewith.py was not found."
+            echo "Using the monsters.csv already included in the ZIP."
+          fi
+
+          CSV="app/src/main/assets/monsters.csv"
+
+          if [ ! -f "$CSV" ]; then
+            echo "::error::$CSV was not found."
+            exit 1
+          fi
+
+          echo "=== monsters.csv ==="
+          wc -l "$CSV"
+          head -n 5 "$CSV"
+
+          DATA_LINES=$(( $(wc -l < "$CSV") - 1 ))
+
+          if [ "$DATA_LINES" -lt 1 ]; then
+            echo "::error::monsters.csv contains no monster records."
+            exit 1
+          fi
+
+          echo "Monster records: $DATA_LINES"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Make Gradle Wrapper executable
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: chmod +x ./gradlew
+
+      - name: Check Gradle Wrapper
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f ./gradlew
+          test -f ./gradle/wrapper/gradle-wrapper.properties
+          test -f ./gradle/wrapper/gradle-wrapper.jar
+          ./gradlew --version
+
+      - name: Build Debug APK
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: |
+          ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Check APK
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK was not generated: $APK"
+            exit 1
+          fi
+
+          echo "=== APK ==="
+          ls -lh "$APK"
+          file "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TerrySPMonsterManager-debug
+          path: ${{ steps.project.outputs.project_dir }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
