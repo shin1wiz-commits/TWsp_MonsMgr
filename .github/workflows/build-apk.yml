@@ -1,410 +1,130 @@
-name: Build Android APK
+name: Build TerrySP APK (Fixed Signing)
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - "*.zip"
+      - ".github/workflows/build-apk.yml"
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
-
-      # ==================================================
-      # 1. Checkout
-      # ==================================================
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check signing secrets
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.TERRYSP_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.TERRYSP_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.TERRYSP_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for item in KS_B64 STORE_PASS KEY_ALIAS KEY_PASS; do
+            if [ -z "${!item:-}" ]; then
+              echo "::error::Required GitHub Actions signing secret is missing: $item"
+              exit 1
+            fi
+          done
 
-      # ==================================================
-      # 2. Find project ZIP
-      # ==================================================
-      - name: Find project ZIP
+      - name: Find newest TerrySP project ZIP
         id: find_zip
         shell: bash
         run: |
           set -euo pipefail
-
-          ZIP_FILE="$(
-            find "$GITHUB_WORKSPACE" \
-              -maxdepth 3 \
-              -type f \
-              -iname '*.zip' \
-              -not -path '*/.git/*' \
-              -not -path '*/.github/*' \
-              -printf '%s\t%p\n' 2>/dev/null \
-              | sort -nr \
-              | head -n 1 \
-              | cut -f2-
-          )"
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP was not found."
-            echo
-            echo "Repository files:"
-            find "$GITHUB_WORKSPACE" -maxdepth 3 -type f | sort
+          ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name 'TerrySPMonsterManager*.zip' -printf '%f\n' | sort -V | tail -n 1)"
+          if [ -z "$ZIP" ]; then
+            echo "::error::TerrySPMonsterManager*.zip was not found in repository root."
             exit 1
           fi
+          echo "Using ZIP: $ZIP"
+          echo "zip=$GITHUB_WORKSPACE/$ZIP" >> "$GITHUB_OUTPUT"
 
-          echo "Project ZIP:"
-          echo "$ZIP_FILE"
-
-          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
-
-
-      # ==================================================
-      # 3. Extract project ZIP
-      # ==================================================
-      - name: Extract project ZIP
+      - name: Extract project
         id: extract
         shell: bash
         run: |
           set -euo pipefail
-
-          PROJECT_DIR="$RUNNER_TEMP/android-project"
-
-          rm -rf "$PROJECT_DIR"
-          mkdir -p "$PROJECT_DIR"
-
-          echo "Extracting:"
-          echo "${{ steps.find_zip.outputs.zip_file }}"
-
-          unzip -q \
-            "${{ steps.find_zip.outputs.zip_file }}" \
-            -d "$PROJECT_DIR"
-
-          echo
-          echo "Extracted files:"
-          find "$PROJECT_DIR" \
-            -maxdepth 5 \
-            -type f \
-            | sort
-
-          echo "project_root=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-
-
-      # ==================================================
-      # 4. Locate Android project
-      # ==================================================
-      - name: Locate Android project
-        id: locate
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ROOT="${{ steps.extract.outputs.project_root }}"
-
-          SETTINGS_FILE="$(
-            find "$ROOT" \
-              -type f \
-              \( \
-                -name 'settings.gradle' \
-                -o \
-                -name 'settings.gradle.kts' \
-              \) \
-              -print -quit
-          )"
-
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR:"
-            echo "settings.gradle / settings.gradle.kts was not found."
-            echo
-            echo "Extracted files:"
-            find "$ROOT" -type f | sort
+          ROOT="$RUNNER_TEMP/terrysp-project"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          unzip -q "${{ steps.find_zip.outputs.zip }}" -d "$ROOT"
+          SETTINGS="$(find "$ROOT" -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle/settings.gradle.kts was not found."
             exit 1
           fi
-
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-
-          echo "Android project:"
-          echo "$PROJECT_DIR"
-
+          PROJECT_DIR="$(dirname "$SETTINGS")"
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Project: $PROJECT_DIR"
 
-
-      # ==================================================
-      # 5. Check Gradle Wrapper
-      # ==================================================
-      - name: Check Gradle Wrapper
-        working-directory: ${{ steps.locate.outputs.project_dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f "./gradlew" ]; then
-            echo "ERROR: gradlew not found."
-            exit 1
-          fi
-
-          if [ ! -f "./gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo "ERROR: gradle-wrapper.properties not found."
-            exit 1
-          fi
-
-          if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "ERROR: gradle-wrapper.jar not found."
-            exit 1
-          fi
-
-          chmod +x ./gradlew
-
-          echo "Gradle Wrapper OK"
-
-          ./gradlew --version
-
-
-      # ==================================================
-      # 6. Validate monsters.csv / breeding.csv
-      # ==================================================
-      - name: Validate CSV data
-        working-directory: ${{ steps.locate.outputs.project_dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          import csv
-          from pathlib import Path
-
-          monsters = Path(
-              "app/src/main/assets/monsters.csv"
-          )
-
-          breeding = Path(
-              "app/src/main/assets/breeding.csv"
-          )
-
-          if not monsters.is_file():
-              raise SystemExit(
-                  "ERROR: monsters.csv not found"
-              )
-
-          if not breeding.is_file():
-              raise SystemExit(
-                  "ERROR: breeding.csv not found"
-              )
-
-          # --------------------------------------
-          # monsters.csv
-          # --------------------------------------
-          with monsters.open(
-              "r",
-              encoding="utf-8-sig",
-              newline=""
-          ) as f:
-              rows = list(csv.DictReader(f))
-
-          expected_monster_header = [
-              "no",
-              "name",
-              "rank",
-              "family",
-              "size"
-          ]
-
-          if len(rows) != 659:
-              raise SystemExit(
-                  "ERROR: monsters.csv expected "
-                  f"659 rows, found {len(rows)}"
-              )
-
-          if list(rows[0].keys()) != expected_monster_header:
-              raise SystemExit(
-                  "ERROR: monsters.csv header is invalid"
-              )
-
-          numbers = []
-
-          for row in rows:
-              try:
-                  numbers.append(int(row["no"]))
-              except Exception:
-                  raise SystemExit(
-                      "ERROR: invalid monster No."
-                  )
-
-          if sorted(numbers) != list(range(1, 660)):
-              raise SystemExit(
-                  "ERROR: monsters.csv must contain "
-                  "No.1 through No.659 exactly once"
-              )
-
-          # --------------------------------------
-          # breeding.csv
-          # --------------------------------------
-          with breeding.open(
-              "r",
-              encoding="utf-8-sig",
-              newline=""
-          ) as f:
-              breed = list(csv.DictReader(f))
-
-          if not breed:
-              raise SystemExit(
-                  "ERROR: breeding.csv is empty"
-              )
-
-          required_breeding_columns = {
-              "recipe_id",
-              "result_no",
-              "result_name",
-              "recipe_type",
-              "parent1",
-              "parent2",
-              "parent3",
-              "parent4"
-          }
-
-          actual_columns = set(
-              breed[0].keys()
-          )
-
-          if not required_breeding_columns.issubset(
-              actual_columns
-          ):
-              raise SystemExit(
-                  "ERROR: breeding.csv header is invalid"
-              )
-
-          print(
-              f"monsters.csv OK: "
-              f"{len(rows)} monsters"
-          )
-
-          print(
-              f"breeding.csv OK: "
-              f"{len(breed)} recipes"
-          )
-          PY
-
-
-      # ==================================================
-      # 7. Set up Java 17
-      #
-      # 前回成功した構成と同じく、
-      # Gradle cache は使用しません。
-      # ==================================================
-      - name: Set up Java
-        uses: actions/setup-java@v5
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-
-      # ==================================================
-      # 8. Set up Android SDK
-      # ==================================================
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-
-      # ==================================================
-      # 9. Accept Android SDK licenses
-      # ==================================================
-      - name: Accept Android SDK licenses
+      - name: Restore permanent signing key
         shell: bash
+        env:
+          KS_B64: ${{ secrets.TERRYSP_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.TERRYSP_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.TERRYSP_KEY_PASSWORD }}
         run: |
-          yes | sdkmanager --licenses \
-            >/dev/null 2>&1 || true
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/terrysp_fixed_release.keystore"
+          printf '%s' "$KS_B64" | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          keytool -list -keystore "$KEYSTORE" -storepass "$STORE_PASS" -alias "$KEY_ALIAS" >/dev/null
+          {
+            echo "TERRYSP_SIGNING_STORE_FILE=$KEYSTORE"
+            echo "TERRYSP_STORE_PASSWORD=$STORE_PASS"
+            echo "TERRYSP_KEY_ALIAS=$KEY_ALIAS"
+            echo "TERRYSP_KEY_PASSWORD=$KEY_PASS"
+          } >> "$GITHUB_ENV"
 
-
-      # ==================================================
-      # 10. Build Debug APK
-      # ==================================================
-      - name: Build Debug APK
-        working-directory: ${{ steps.locate.outputs.project_dir }}
+      - name: Build fixed-signed Release APK
+        working-directory: ${{ steps.extract.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "========================================"
-          echo "Building Debug APK"
-          echo "========================================"
-
           chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
 
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            assembleDebug
-
-
-      # ==================================================
-      # 11. Find APK
-      # ==================================================
-      - name: Find APK
-        id: find_apk
-        working-directory: ${{ steps.locate.outputs.project_dir }}
+      - name: Verify APK signature
+        id: apk
+        working-directory: ${{ steps.extract.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
-
-          APK_FILE="$(
-            find app/build/outputs/apk/debug \
-              -type f \
-              -name '*.apk' \
-              -print -quit
-          )"
-
-          if [ -z "$APK_FILE" ]; then
-            echo "ERROR: Debug APK was not found."
-            echo
-            echo "Build output:"
-            find app/build/outputs \
-              -type f \
-              2>/dev/null \
-              | sort || true
+          APK="$(find app/build/outputs/apk/release -type f -name '*.apk' -print -quit)"
+          if [ -z "$APK" ]; then
+            echo "::error::Release APK was not found."
             exit 1
           fi
+          apksigner verify --verbose --print-certs "$APK"
+          ABS="$(realpath "$APK")"
+          echo "apk=$ABS" >> "$GITHUB_OUTPUT"
+          echo "Fixed-signed APK: $ABS"
 
-          APK_ABS="$(realpath "$APK_FILE")"
-
-          echo "APK:"
-          echo "$APK_ABS"
-
-          echo "apk_file=$APK_ABS" \
-            >> "$GITHUB_OUTPUT"
-
-
-      # ==================================================
-      # 12. Upload APK
-      # ==================================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: terrysp-monster-manager-breeding-debug
-          path: ${{ steps.find_apk.outputs.apk_file }}
+          name: TerrySP-v2.7.4-fixed-signed
+          path: ${{ steps.apk.outputs.apk }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
 
-
-      # ==================================================
-      # 13. Build summary
-      # ==================================================
-      - name: Build summary
-        if: always()
-        shell: bash
-        run: |
-          echo "========================================"
-          echo "TerrySP Monster Manager v2.0"
-          echo "Build Summary"
-          echo "========================================"
-
-          echo
-          echo "ZIP:"
-          echo "${{ steps.find_zip.outputs.zip_file }}"
-
-          echo
-          echo "Android project:"
-          echo "${{ steps.locate.outputs.project_dir }}"
-
-          echo
-          echo "APK:"
-          echo "${{ steps.find_apk.outputs.apk_file }}"
