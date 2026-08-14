@@ -14,34 +14,34 @@ jobs:
       - name: Validate signing secrets safely
         shell: bash
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          TERRYSP_KEYSTORE_BASE64: ${{ secrets.TERRYSP_KEYSTORE_BASE64 }}
+          TERRYSP_STORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
+          TERRYSP_KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
+          TERRYSP_KEY_PASSWORD: ${{ secrets.TERRYSP_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
-          if [ -z "${KEYSTORE_BASE64:-}" ]; then
-            echo "ERROR: KEYSTORE_BASE64 is empty"
+          if [ -z "${TERRYSP_KEYSTORE_BASE64:-}" ]; then
+            echo "ERROR: TERRYSP_KEYSTORE_BASE64 is empty"
             exit 1
           fi
 
-          if [ -z "${KEYSTORE_PASSWORD:-}" ]; then
-            echo "ERROR: KEYSTORE_PASSWORD is empty"
+          if [ -z "${TERRYSP_STORE_PASSWORD:-}" ]; then
+            echo "ERROR: TERRYSP_STORE_PASSWORD is empty"
             exit 1
           fi
 
-          if [ -z "${KEY_ALIAS:-}" ]; then
-            echo "ERROR: KEY_ALIAS is empty"
+          if [ -z "${TERRYSP_KEY_ALIAS:-}" ]; then
+            echo "ERROR: TERRYSP_KEY_ALIAS is empty"
             exit 1
           fi
 
-          if [ -z "${KEY_PASSWORD:-}" ]; then
-            echo "ERROR: KEY_PASSWORD is empty"
+          if [ -z "${TERRYSP_KEY_PASSWORD:-}" ]; then
+            echo "ERROR: TERRYSP_KEY_PASSWORD is empty"
             exit 1
           fi
 
-          echo "Signing secrets are present."
+          echo "All signing secrets are present."
 
       - name: Find newest TerrySP project ZIP
         id: find_zip
@@ -79,11 +79,7 @@ jobs:
           unzip -q "${{ steps.find_zip.outputs.zip_file }}" \
             -d "$RUNNER_TEMP/terrysp_project"
 
-          echo "Extracted files:"
-          find "$RUNNER_TEMP/terrysp_project" \
-            -maxdepth 3 \
-            -type f \
-            | head -100
+          echo "Project extracted."
 
       - name: Find Android project root
         id: project
@@ -99,7 +95,6 @@ jobs:
 
           if [ -z "${PROJECT_DIR:-}" ]; then
             echo "ERROR: Android project root was not found."
-            echo "settings.gradle/settings.gradle.kts is missing."
             exit 1
           fi
 
@@ -123,23 +118,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-          else
+          if [ ! -f "./gradlew" ]; then
             echo "ERROR: gradlew was not found."
             exit 1
           fi
 
+          chmod +x ./gradlew
+
       - name: Decode fixed release keystore
         shell: bash
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          TERRYSP_KEYSTORE_BASE64: ${{ secrets.TERRYSP_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
 
           KEYSTORE_PATH="$RUNNER_TEMP/TerrySP_fixed_release_v2.keystore"
 
-          printf '%s' "$KEYSTORE_BASE64" \
+          printf '%s' "$TERRYSP_KEYSTORE_BASE64" \
             | tr -d '\r\n ' \
             | base64 --decode \
             > "$KEYSTORE_PATH"
@@ -156,18 +151,16 @@ jobs:
       - name: Verify keystore before build
         shell: bash
         env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          TERRYSP_STORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
+          TERRYSP_KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
         run: |
           set -euo pipefail
-
-          echo "Checking keystore..."
 
           keytool \
             -list \
             -keystore "$KEYSTORE_PATH" \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "$KEY_ALIAS" \
+            -storepass "$TERRYSP_STORE_PASSWORD" \
+            -alias "$TERRYSP_KEY_ALIAS" \
             >/dev/null
 
           echo "Keystore and alias are valid."
@@ -177,19 +170,19 @@ jobs:
         working-directory: ${{ steps.project.outputs.project_dir }}
         env:
           TERRYSP_KEYSTORE_FILE: ${{ env.KEYSTORE_PATH }}
-          TERRYSP_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          TERRYSP_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          TERRYSP_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          TERRYSP_STORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
+          TERRYSP_KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
+          TERRYSP_KEY_PASSWORD: ${{ secrets.TERRYSP_KEY_PASSWORD }}
 
           KEYSTORE_FILE: ${{ env.KEYSTORE_PATH }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.TERRYSP_KEY_PASSWORD }}
 
           ANDROID_KEYSTORE_FILE: ${{ env.KEYSTORE_PATH }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.TERRYSP_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -209,12 +202,8 @@ jobs:
 
           PROJECT_DIR="${{ steps.project.outputs.project_dir }}"
 
-          echo "Searching generated APK files..."
-
-          find "$PROJECT_DIR" \
-            -type f \
-            -name "*.apk" \
-            -print
+          echo "Generated APK files:"
+          find "$PROJECT_DIR" -type f -name "*.apk" -print
 
           APK_FILE="$(find "$PROJECT_DIR" \
             -type f \
@@ -248,9 +237,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Searching Android SDK apksigner..."
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 
-          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" \
+          if [ -z "$SDK_ROOT" ]; then
+            echo "ERROR: Android SDK path is not defined."
+            exit 1
+          fi
+
+          echo "Android SDK:"
+          echo "$SDK_ROOT"
+
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" \
             -type f \
             -name "apksigner" \
             2>/dev/null \
@@ -259,8 +256,8 @@ jobs:
 
           if [ -z "${APKSIGNER:-}" ]; then
             echo "ERROR: apksigner was not found."
-            echo "ANDROID_HOME=${ANDROID_HOME:-}"
-            echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+            echo "Available build-tools:"
+            find "$SDK_ROOT/build-tools" -maxdepth 2 -type f -name "apksigner*" || true
             exit 1
           fi
 
@@ -268,10 +265,6 @@ jobs:
 
           echo "Using apksigner:"
           echo "$APKSIGNER"
-
-          echo
-          echo "Verifying APK:"
-          echo "$APK_FILE"
 
           "$APKSIGNER" verify \
             --verbose \
@@ -297,7 +290,7 @@ jobs:
 
           cp "$APK_FILE" "$OUTPUT_APK"
 
-          echo "Prepared:"
+          echo "Prepared APK:"
           ls -lh "$OUTPUT_APK"
 
           echo "output_dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
