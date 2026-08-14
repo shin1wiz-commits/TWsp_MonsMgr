@@ -256,17 +256,25 @@ jobs:
 
           if [ -z "${APKSIGNER:-}" ]; then
             echo "ERROR: apksigner was not found."
+
             echo "Available build-tools:"
-            find "$SDK_ROOT/build-tools" -maxdepth 2 -type f -name "apksigner*" || true
+            find "$SDK_ROOT/build-tools" \
+              -maxdepth 2 \
+              -type f \
+              -name "apksigner*" \
+              -print || true
+
             exit 1
           fi
-
-          chmod +x "$APKSIGNER"
 
           echo "Using apksigner:"
           echo "$APKSIGNER"
 
-          "$APKSIGNER" verify \
+          echo
+          echo "Verifying APK:"
+          echo "$APK_FILE"
+
+          bash "$APKSIGNER" verify \
             --verbose \
             --print-certs \
             "$APK_FILE"
