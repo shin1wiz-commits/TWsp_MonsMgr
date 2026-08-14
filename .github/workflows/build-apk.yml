@@ -21,25 +21,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${TERRYSP_KEYSTORE_BASE64:-}" ]; then
+          [ -n "${TERRYSP_KEYSTORE_BASE64:-}" ] || {
             echo "ERROR: TERRYSP_KEYSTORE_BASE64 is empty"
             exit 1
-          fi
+          }
 
-          if [ -z "${TERRYSP_STORE_PASSWORD:-}" ]; then
+          [ -n "${TERRYSP_STORE_PASSWORD:-}" ] || {
             echo "ERROR: TERRYSP_STORE_PASSWORD is empty"
             exit 1
-          fi
+          }
 
-          if [ -z "${TERRYSP_KEY_ALIAS:-}" ]; then
+          [ -n "${TERRYSP_KEY_ALIAS:-}" ] || {
             echo "ERROR: TERRYSP_KEY_ALIAS is empty"
             exit 1
-          fi
+          }
 
-          if [ -z "${TERRYSP_KEY_PASSWORD:-}" ]; then
+          [ -n "${TERRYSP_KEY_PASSWORD:-}" ] || {
             echo "ERROR: TERRYSP_KEY_PASSWORD is empty"
             exit 1
-          fi
+          }
 
           echo "All signing secrets are present."
 
@@ -59,7 +59,7 @@ jobs:
             | cut -d' ' -f2-)"
 
           if [ -z "${ZIP_FILE:-}" ]; then
-            echo "ERROR: ZIP file was not found in repository root."
+            echo "ERROR: ZIP file was not found."
             exit 1
           fi
 
@@ -76,7 +76,8 @@ jobs:
           rm -rf "$RUNNER_TEMP/terrysp_project"
           mkdir -p "$RUNNER_TEMP/terrysp_project"
 
-          unzip -q "${{ steps.find_zip.outputs.zip_file }}" \
+          unzip -q \
+            "${{ steps.find_zip.outputs.zip_file }}" \
             -d "$RUNNER_TEMP/terrysp_project"
 
           echo "Project extracted."
@@ -98,7 +99,7 @@ jobs:
             exit 1
           fi
 
-          echo "Android project root:"
+          echo "Project:"
           echo "$PROJECT_DIR"
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
@@ -165,24 +166,9 @@ jobs:
 
           echo "Keystore and alias are valid."
 
-      - name: Build fixed-signed Release APK
+      - name: Build Release APK
         shell: bash
         working-directory: ${{ steps.project.outputs.project_dir }}
-        env:
-          TERRYSP_KEYSTORE_FILE: ${{ env.KEYSTORE_PATH }}
-          TERRYSP_STORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
-          TERRYSP_KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
-          TERRYSP_KEY_PASSWORD: ${{ secrets.TERRYSP_KEY_PASSWORD }}
-
-          KEYSTORE_FILE: ${{ env.KEYSTORE_PATH }}
-          KEYSTORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.TERRYSP_KEY_PASSWORD }}
-
-          ANDROID_KEYSTORE_FILE: ${{ env.KEYSTORE_PATH }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.TERRYSP_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -194,7 +180,7 @@ jobs:
             --stacktrace \
             --no-daemon
 
-      - name: Find generated Release APK
+      - name: Find unsigned Release APK
         id: apk
         shell: bash
         run: |
@@ -203,37 +189,37 @@ jobs:
           PROJECT_DIR="${{ steps.project.outputs.project_dir }}"
 
           echo "Generated APK files:"
-          find "$PROJECT_DIR" -type f -name "*.apk" -print
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -print
 
           APK_FILE="$(find "$PROJECT_DIR" \
             -type f \
-            -name "*.apk" \
-            ! -name "*unaligned*" \
-            | grep -i "release" \
+            -name "*release*unsigned*.apk" \
             | head -n 1 || true)"
 
           if [ -z "${APK_FILE:-}" ]; then
             APK_FILE="$(find "$PROJECT_DIR" \
               -type f \
               -name "*.apk" \
-              ! -name "*unaligned*" \
+              | grep -i release \
               | head -n 1 || true)"
           fi
 
           if [ -z "${APK_FILE:-}" ]; then
-            echo "ERROR: APK was not generated."
+            echo "ERROR: Release APK was not found."
             exit 1
           fi
 
-          echo "APK found:"
+          echo "Unsigned APK:"
           echo "$APK_FILE"
 
           echo "apk_file=$APK_FILE" >> "$GITHUB_OUTPUT"
 
-      - name: Verify APK signature
+      - name: Find Android signing tools
+        id: tools
         shell: bash
-        env:
-          APK_FILE: ${{ steps.apk.outputs.apk_file }}
         run: |
           set -euo pipefail
 
@@ -244,49 +230,129 @@ jobs:
             exit 1
           fi
 
-          echo "Android SDK:"
-          echo "$SDK_ROOT"
-
-          APKSIGNER="$(find "$SDK_ROOT/build-tools" \
-            -type f \
-            -name "apksigner" \
-            2>/dev/null \
+          BUILD_TOOLS_DIR="$(find "$SDK_ROOT/build-tools" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -type d \
             | sort -V \
             | tail -n 1)"
 
-          if [ -z "${APKSIGNER:-}" ]; then
-            echo "ERROR: apksigner was not found."
-
-            echo "Available build-tools:"
-            find "$SDK_ROOT/build-tools" \
-              -maxdepth 2 \
-              -type f \
-              -name "apksigner*" \
-              -print || true
-
+          if [ -z "${BUILD_TOOLS_DIR:-}" ]; then
+            echo "ERROR: Android build-tools not found."
             exit 1
           fi
 
-          echo "Using apksigner:"
-          echo "$APKSIGNER"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
 
-          echo
-          echo "Verifying APK:"
-          echo "$APK_FILE"
+          if [ ! -f "$APKSIGNER" ]; then
+            echo "ERROR: apksigner not found."
+            exit 1
+          fi
+
+          if [ ! -f "$ZIPALIGN" ]; then
+            echo "ERROR: zipalign not found."
+            exit 1
+          fi
+
+          echo "Build tools:"
+          echo "$BUILD_TOOLS_DIR"
+
+          echo "apksigner=$APKSIGNER" >> "$GITHUB_OUTPUT"
+          echo "zipalign=$ZIPALIGN" >> "$GITHUB_OUTPUT"
+
+      - name: Zipalign Release APK
+        id: aligned
+        shell: bash
+        env:
+          APK_FILE: ${{ steps.apk.outputs.apk_file }}
+          ZIPALIGN: ${{ steps.tools.outputs.zipalign }}
+        run: |
+          set -euo pipefail
+
+          ALIGNED_APK="$RUNNER_TEMP/TerrySP-aligned.apk"
+
+          rm -f "$ALIGNED_APK"
+
+          echo "Aligning APK..."
+
+          "$ZIPALIGN" \
+            -f \
+            -v \
+            4 \
+            "$APK_FILE" \
+            "$ALIGNED_APK"
+
+          if [ ! -s "$ALIGNED_APK" ]; then
+            echo "ERROR: zipalign did not create APK."
+            exit 1
+          fi
+
+          echo "Aligned APK created:"
+          ls -lh "$ALIGNED_APK"
+
+          echo "aligned_apk=$ALIGNED_APK" >> "$GITHUB_OUTPUT"
+
+      - name: Sign Release APK
+        id: signed
+        shell: bash
+        env:
+          APKSIGNER: ${{ steps.tools.outputs.apksigner }}
+          ALIGNED_APK: ${{ steps.aligned.outputs.aligned_apk }}
+          TERRYSP_STORE_PASSWORD: ${{ secrets.TERRYSP_STORE_PASSWORD }}
+          TERRYSP_KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
+          TERRYSP_KEY_PASSWORD: ${{ secrets.TERRYSP_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          SIGNED_APK="$RUNNER_TEMP/TerrySP-fixed-release.apk"
+
+          rm -f "$SIGNED_APK"
+
+          echo "Signing APK..."
+
+          bash "$APKSIGNER" sign \
+            --ks "$KEYSTORE_PATH" \
+            --ks-key-alias "$TERRYSP_KEY_ALIAS" \
+            --ks-pass "pass:$TERRYSP_STORE_PASSWORD" \
+            --key-pass "pass:$TERRYSP_KEY_PASSWORD" \
+            --out "$SIGNED_APK" \
+            "$ALIGNED_APK"
+
+          if [ ! -s "$SIGNED_APK" ]; then
+            echo "ERROR: Signed APK was not created."
+            exit 1
+          fi
+
+          echo "Signed APK created:"
+          ls -lh "$SIGNED_APK"
+
+          echo "signed_apk=$SIGNED_APK" >> "$GITHUB_OUTPUT"
+
+      - name: Verify signed APK
+        shell: bash
+        env:
+          APKSIGNER: ${{ steps.tools.outputs.apksigner }}
+          SIGNED_APK: ${{ steps.signed.outputs.signed_apk }}
+        run: |
+          set -euo pipefail
+
+          echo "Verifying signed APK:"
+          echo "$SIGNED_APK"
 
           bash "$APKSIGNER" verify \
             --verbose \
             --print-certs \
-            "$APK_FILE"
+            "$SIGNED_APK"
 
           echo
-          echo "APK signature verification succeeded."
+          echo "APK SIGNATURE VERIFIED SUCCESSFULLY."
 
       - name: Prepare APK artifact
         id: artifact
         shell: bash
         env:
-          APK_FILE: ${{ steps.apk.outputs.apk_file }}
+          SIGNED_APK: ${{ steps.signed.outputs.signed_apk }}
         run: |
           set -euo pipefail
 
@@ -296,9 +362,9 @@ jobs:
           rm -rf "$OUTPUT_DIR"
           mkdir -p "$OUTPUT_DIR"
 
-          cp "$APK_FILE" "$OUTPUT_APK"
+          cp "$SIGNED_APK" "$OUTPUT_APK"
 
-          echo "Prepared APK:"
+          echo "Final APK:"
           ls -lh "$OUTPUT_APK"
 
           echo "output_dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
