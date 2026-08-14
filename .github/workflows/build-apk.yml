@@ -1,13 +1,7 @@
-name: Build TerrySP APK (Fixed Signing)
+name: Build TerrySP APK (Fixed Signing + Diagnostics)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "*.zip"
-      - ".github/workflows/build-apk.yml"
 
 permissions:
   contents: read
@@ -15,12 +9,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check signing secrets
+      - name: Validate signing secrets safely
         shell: bash
         env:
           KS_B64: ${{ secrets.TERRYSP_KEYSTORE_BASE64 }}
@@ -29,12 +22,51 @@ jobs:
           KEY_PASS: ${{ secrets.TERRYSP_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          for item in KS_B64 STORE_PASS KEY_ALIAS KEY_PASS; do
-            if [ -z "${!item:-}" ]; then
-              echo "::error::Required GitHub Actions signing secret is missing: $item"
+          for v in KS_B64 STORE_PASS KEY_ALIAS KEY_PASS; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::$v is missing"
               exit 1
             fi
           done
+          echo "All four secrets are present."
+          KEYSTORE="$RUNNER_TEMP/terrysp_fixed_release.keystore"
+          if ! printf '%s' "$KS_B64" | base64 --decode > "$KEYSTORE"; then
+            echo "::error::STEP A FAILED: TERRYSP_KEYSTORE_BASE64 is not valid Base64."
+            exit 1
+          fi
+          echo "STEP A OK: Base64 decoded."
+
+          if ! keytool -list -keystore "$KEYSTORE" -storepass "$STORE_PASS" >/dev/null 2>&1; then
+            echo "::error::STEP B FAILED: keystore cannot be opened. STORE_PASSWORD or Base64 content is wrong."
+            exit 1
+          fi
+          echo "STEP B OK: keystore/store password."
+
+          if ! keytool -list -keystore "$KEYSTORE" -storepass "$STORE_PASS" -alias "$KEY_ALIAS" >/dev/null 2>&1; then
+            echo "::error::STEP C FAILED: KEY_ALIAS was not found."
+            exit 1
+          fi
+          echo "STEP C OK: key alias."
+
+          TESTSTORE="$RUNNER_TEMP/keycheck.p12"
+          if ! keytool -importkeystore \
+              -srckeystore "$KEYSTORE" -srcstorepass "$STORE_PASS" \
+              -srcalias "$KEY_ALIAS" -srckeypass "$KEY_PASS" \
+              -destkeystore "$TESTSTORE" -deststoretype PKCS12 \
+              -deststorepass "TemporaryDiagnosticPassword123!" \
+              -destkeypass "TemporaryDiagnosticPassword123!" \
+              -noprompt >/dev/null 2>&1; then
+            echo "::error::STEP D FAILED: private key cannot be decrypted. KEY_PASSWORD is wrong."
+            exit 1
+          fi
+          echo "STEP D OK: private key/key password."
+          rm -f "$TESTSTORE"
+          {
+            echo "TERRYSP_SIGNING_STORE_FILE=$KEYSTORE"
+            echo "TERRYSP_STORE_PASSWORD=$STORE_PASS"
+            echo "TERRYSP_KEY_ALIAS=$KEY_ALIAS"
+            echo "TERRYSP_KEY_PASSWORD=$KEY_PASS"
+          } >> "$GITHUB_ENV"
 
       - name: Find newest TerrySP project ZIP
         id: find_zip
@@ -42,11 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name 'TerrySPMonsterManager*.zip' -printf '%f\n' | sort -V | tail -n 1)"
-          if [ -z "$ZIP" ]; then
-            echo "::error::TerrySPMonsterManager*.zip was not found in repository root."
-            exit 1
-          fi
-          echo "Using ZIP: $ZIP"
+          test -n "$ZIP" || { echo "::error::Project ZIP not found."; exit 1; }
           echo "zip=$GITHUB_WORKSPACE/$ZIP" >> "$GITHUB_OUTPUT"
 
       - name: Extract project
@@ -55,17 +83,11 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="$RUNNER_TEMP/terrysp-project"
-          rm -rf "$ROOT"
-          mkdir -p "$ROOT"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
           unzip -q "${{ steps.find_zip.outputs.zip }}" -d "$ROOT"
           SETTINGS="$(find "$ROOT" -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
-          if [ -z "$SETTINGS" ]; then
-            echo "::error::settings.gradle/settings.gradle.kts was not found."
-            exit 1
-          fi
-          PROJECT_DIR="$(dirname "$SETTINGS")"
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Project: $PROJECT_DIR"
+          test -n "$SETTINGS" || { echo "::error::Gradle settings file not found."; exit 1; }
+          echo "project_dir=$(dirname "$SETTINGS")" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -76,26 +98,6 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Restore permanent signing key
-        shell: bash
-        env:
-          KS_B64: ${{ secrets.TERRYSP_KEYSTORE_BASE64 }}
-          STORE_PASS: ${{ secrets.TERRYSP_STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.TERRYSP_KEY_ALIAS }}
-          KEY_PASS: ${{ secrets.TERRYSP_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          KEYSTORE="$RUNNER_TEMP/terrysp_fixed_release.keystore"
-          printf '%s' "$KS_B64" | base64 --decode > "$KEYSTORE"
-          chmod 600 "$KEYSTORE"
-          keytool -list -keystore "$KEYSTORE" -storepass "$STORE_PASS" -alias "$KEY_ALIAS" >/dev/null
-          {
-            echo "TERRYSP_SIGNING_STORE_FILE=$KEYSTORE"
-            echo "TERRYSP_STORE_PASSWORD=$STORE_PASS"
-            echo "TERRYSP_KEY_ALIAS=$KEY_ALIAS"
-            echo "TERRYSP_KEY_PASSWORD=$KEY_PASS"
-          } >> "$GITHUB_ENV"
-
       - name: Build fixed-signed Release APK
         working-directory: ${{ steps.extract.outputs.project_dir }}
         shell: bash
@@ -104,21 +106,16 @@ jobs:
           chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace assembleRelease
 
-      - name: Verify APK signature
+      - name: Verify and upload APK
         id: apk
         working-directory: ${{ steps.extract.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
           APK="$(find app/build/outputs/apk/release -type f -name '*.apk' -print -quit)"
-          if [ -z "$APK" ]; then
-            echo "::error::Release APK was not found."
-            exit 1
-          fi
+          test -n "$APK" || { echo "::error::Release APK not found."; exit 1; }
           apksigner verify --verbose --print-certs "$APK"
-          ABS="$(realpath "$APK")"
-          echo "apk=$ABS" >> "$GITHUB_OUTPUT"
-          echo "Fixed-signed APK: $ABS"
+          echo "apk=$(realpath "$APK")" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -127,4 +124,3 @@ jobs:
           path: ${{ steps.apk.outputs.apk }}
           if-no-files-found: error
           retention-days: 30
-
