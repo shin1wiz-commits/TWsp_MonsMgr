@@ -1,0 +1,46 @@
+name: Rebuild Altema Master 659
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "tools/altema-master/**"
+      - ".github/workflows/build-altema-master.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    name: Rebuild 659-monster baseline master
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: tools/altema-master
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild Altema master and comparison reports
+        run: python rebuild_altema_master.py
+
+      - name: Upload generated CSV reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: altema-master-659-rebuild-${{ github.run_number }}
+          path: tools/altema-master/output/*.csv
+          if-no-files-found: error
+          retention-days: 30
